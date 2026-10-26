@@ -1,12 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { PastQuestionPaper, UserProfile, CbtLaunchConfig } from '../types';
 import { usePlatform } from '../lib/realtimeStore';
+import { BookmarkButton } from './BookmarkButton';
 
 interface PastQuestionViewerModalProps {
   paper: PastQuestionPaper;
   currentUser: UserProfile | null;
   onClose: () => void;
   onLaunchSubjectCbt: (config: CbtLaunchConfig) => void;
+  isSaved: boolean;
+  onToggleBookmark: () => void;
 }
 
 export const PastQuestionViewerModal: React.FC<PastQuestionViewerModalProps> = ({
@@ -14,6 +17,8 @@ export const PastQuestionViewerModal: React.FC<PastQuestionViewerModalProps> = (
   currentUser,
   onClose,
   onLaunchSubjectCbt,
+  isSaved,
+  onToggleBookmark,
 }) => {
   const { recordMaterialRead } = usePlatform();
   const [revealAllAnswers, setRevealAllAnswers] = useState(false);
@@ -68,13 +73,16 @@ export const PastQuestionViewerModal: React.FC<PastQuestionViewerModalProps> = (
             <h2 className="font-headline text-xl font-bold text-white">{paper.title}</h2>
           </div>
 
-          <button
-            onClick={onClose}
-            className="text-zinc-400 hover:text-white p-1.5 rounded-lg hover:bg-zinc-800 cursor-pointer shrink-0"
-            aria-label="Close past questions viewer"
-          >
-            <span className="material-symbols-outlined text-xl">close</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <BookmarkButton isSaved={isSaved} onToggle={onToggleBookmark} size="sm" />
+            <button
+              onClick={onClose}
+              className="text-zinc-400 hover:text-white p-1.5 rounded-lg hover:bg-zinc-800 cursor-pointer shrink-0"
+              aria-label="Close past questions viewer"
+            >
+              <span className="material-symbols-outlined text-xl">close</span>
+            </button>
+          </div>
         </div>
 
         {/* Action Toolbar */}

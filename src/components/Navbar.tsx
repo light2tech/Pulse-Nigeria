@@ -27,7 +27,7 @@ export const Navbar: React.FC<NavbarProps> = ({
     setCurrentView('login');
   };
 
-  const isLive = wsConnected && snapshot.supabaseConnected;
+  const isLive = snapshot.supabaseConnected || wsConnected;
 
   return (
     <nav className="bg-zinc-950/90 backdrop-blur-md border-b border-zinc-800/90 sticky top-0 z-50">

@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   AppView,
   UserProfile,
   StudyMaterial,
   PastQuestionPaper,
   CbtLaunchConfig,
+  SavedResourceItem,
+  SavedResourceType,
 } from './types';
 import { Navbar } from './components/Navbar';
 import { LandingView } from './components/LandingView';
@@ -16,11 +18,11 @@ import { MaterialReaderModal } from './components/MaterialReaderModal';
 import { PastQuestionViewerModal } from './components/PastQuestionViewerModal';
 import { getActiveSessionUser, saveUserProfile, clearActiveSession } from './lib/userStore';
 import { supabase } from './lib/supabase';
-import { syncAuthenticatedProfile } from './lib/supabaseService';
+import { syncAuthenticatedProfile, toggleResourceBookmarkOnServer } from './lib/supabaseService';
 import { PlatformProvider, usePlatform } from './lib/realtimeStore';
 
 function AppShell() {
-  const { reportPresence } = usePlatform();
+  const { reportPresence, snapshot } = usePlatform();
   const [currentView, setCurrentView] = useState<AppView>('landing');
   const [currentUser, setCurrentUserState] = useState<UserProfile | null>(() =>
     getActiveSessionUser()
@@ -30,8 +32,9 @@ function AppShell() {
   const [cbtLaunchConfig, setCbtLaunchConfig] = useState<CbtLaunchConfig>({
     mode: 'standard',
   });
+  const pendingBookmarkMutationsRef = useRef<number>(0);
 
-  const setCurrentUser = (user: UserProfile | null) => {
+  const setCurrentUser = useCallback((user: UserProfile | null) => {
     if (!user) {
       clearActiveSession();
       setCurrentUserState(null);
@@ -39,27 +42,49 @@ function AppShell() {
     }
     const saved = saveUserProfile(user);
     setCurrentUserState(saved);
-  };
+  }, []);
 
-  // Restore active Supabase Auth session on mount without overwriting saved profile customizations
+  // Restore active session on mount (works via Supabase client session OR cached profile synced against /api/auth/sync-profile)
   useEffect(() => {
     let mounted = true;
-    supabase.auth.getSession().then(async ({ data }) => {
-      const sessionUser = data?.session?.user;
-      if (!mounted || !sessionUser?.email) return;
+    const restore = async () => {
       try {
-        const synced = await syncAuthenticatedProfile(sessionUser.id, sessionUser.email);
+        const { data } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+        const sessionUser = data?.session?.user;
+        const cachedUser = getActiveSessionUser();
+        const targetId = sessionUser?.id || cachedUser?.id;
+        const targetEmail = sessionUser?.email || cachedUser?.email;
+        if (!mounted || !targetId || !targetEmail) return;
+
+        const synced = await syncAuthenticatedProfile(targetId, targetEmail);
         if (mounted) {
           setCurrentUser(synced);
         }
       } catch {
         // Keep cached local session if offline
       }
-    });
+    };
+    restore();
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [setCurrentUser]);
+
+  // Reconcile savedResources from real-time WebSocket snapshots across tabs/devices when idle
+  useEffect(() => {
+    if (!currentUser || pendingBookmarkMutationsRef.current > 0) return;
+    const liveMatch = snapshot.users.find((u) => u.id === currentUser.id);
+    if (!liveMatch || !Array.isArray(liveMatch.savedResources)) return;
+
+    const localSerialized = JSON.stringify(currentUser.savedResources || []);
+    const remoteSerialized = JSON.stringify(liveMatch.savedResources);
+    if (localSerialized !== remoteSerialized) {
+      setCurrentUser({
+        ...currentUser,
+        savedResources: liveMatch.savedResources,
+      });
+    }
+  }, [snapshot.users, currentUser, setCurrentUser]);
 
   // Broadcast current screen presence over WebSocket
   useEffect(() => {
@@ -73,6 +98,85 @@ function AppShell() {
     setCurrentView('cbt');
   };
 
+  const savedResources: SavedResourceItem[] = currentUser?.savedResources || [];
+
+  const isResourceSaved = useCallback(
+    (resourceId: string, resourceType: SavedResourceType): boolean => {
+      return savedResources.some(
+        (item) => item.resourceId === resourceId && item.resourceType === resourceType
+      );
+    },
+    [savedResources]
+  );
+
+  const handleToggleBookmark = useCallback(
+    async (resourceId: string, resourceType: SavedResourceType) => {
+      if (!currentUser) {
+        setSelectedMaterial(null);
+        setSelectedPastQuestion(null);
+        setCurrentView('login');
+        return;
+      }
+
+      const previousList = currentUser.savedResources || [];
+      const alreadySaved = previousList.some(
+        (item) => item.resourceId === resourceId && item.resourceType === resourceType
+      );
+      const action: 'add' | 'remove' = alreadySaved ? 'remove' : 'add';
+
+      const optimisticList: SavedResourceItem[] = alreadySaved
+        ? previousList.filter(
+            (item) => !(item.resourceId === resourceId && item.resourceType === resourceType)
+          )
+        : [
+            {
+              resourceId,
+              resourceType,
+              savedAt: new Date().toISOString(),
+            },
+            ...previousList,
+          ];
+
+      // Immediate optimistic update + localStorage cache
+      const optimisticUser: UserProfile = {
+        ...currentUser,
+        savedResources: optimisticList,
+      };
+      setCurrentUser(optimisticUser);
+
+      pendingBookmarkMutationsRef.current += 1;
+      try {
+        const res = await toggleResourceBookmarkOnServer({
+          userId: currentUser.id,
+          resourceId,
+          resourceType,
+          action,
+        });
+        if (Array.isArray(res.savedResources)) {
+          setCurrentUserState((prev) => {
+            if (!prev || prev.id !== currentUser.id) return prev;
+            return saveUserProfile({
+              ...prev,
+              savedResources: res.savedResources,
+            });
+          });
+        }
+      } catch {
+        // Rollback if server rejected mutation
+        setCurrentUserState((prev) => {
+          if (!prev || prev.id !== currentUser.id) return prev;
+          return saveUserProfile({
+            ...prev,
+            savedResources: previousList,
+          });
+        });
+      } finally {
+        pendingBookmarkMutationsRef.current = Math.max(0, pendingBookmarkMutationsRef.current - 1);
+      }
+    },
+    [currentUser, setCurrentUser]
+  );
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-body selection:bg-emerald-500/30 selection:text-emerald-200">
       {currentView !== 'login' && currentView !== 'register' && (
@@ -84,6 +188,19 @@ function AppShell() {
         />
       )}
 
+      {snapshot.configMissing && (
+        <div className="bg-amber-500/10 border-b border-amber-500/30 px-4 py-3 text-xs text-amber-200">
+          <div className="max-w-[1280px] mx-auto flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <span className="font-semibold text-amber-300">Supabase Environment Variables Missing: </span>
+              Add <code className="font-mono text-amber-100">SUPABASE_URL</code>,{' '}
+              <code className="font-mono text-amber-100">SUPABASE_PUBLISHABLE_KEY</code>, and{' '}
+              <code className="font-mono text-amber-100">SUPABASE_SECRET_KEY</code> in your deployment&apos;s Environment Variables settings (e.g. Vercel → Settings → Environment Variables) and redeploy.
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex-1">
         {currentView === 'landing' && (
           <LandingView
@@ -92,6 +209,8 @@ function AppShell() {
             onOpenMaterial={(mat) => setSelectedMaterial(mat)}
             onOpenPastQuestion={(paper) => setSelectedPastQuestion(paper)}
             onLaunchCbt={handleLaunchCbt}
+            isResourceSaved={isResourceSaved}
+            onToggleBookmark={handleToggleBookmark}
           />
         )}
 
@@ -113,6 +232,8 @@ function AppShell() {
               onOpenMaterial={(mat) => setSelectedMaterial(mat)}
               onOpenPastQuestion={(paper) => setSelectedPastQuestion(paper)}
               onLaunchCbt={handleLaunchCbt}
+              isResourceSaved={isResourceSaved}
+              onToggleBookmark={handleToggleBookmark}
             />
           ) : (
             <AuthView
@@ -137,6 +258,8 @@ function AppShell() {
               onOpenMaterial={(mat) => setSelectedMaterial(mat)}
               onOpenPastQuestion={(paper) => setSelectedPastQuestion(paper)}
               onLaunchCbt={handleLaunchCbt}
+              isResourceSaved={isResourceSaved}
+              onToggleBookmark={handleToggleBookmark}
             />
           ) : (
             <AuthView
@@ -162,6 +285,8 @@ function AppShell() {
           onClose={() => setSelectedMaterial(null)}
           onLaunchSubjectCbt={handleLaunchCbt}
           setCurrentView={setCurrentView}
+          isSaved={isResourceSaved(selectedMaterial.id, 'material')}
+          onToggleBookmark={() => handleToggleBookmark(selectedMaterial.id, 'material')}
         />
       )}
 
@@ -171,6 +296,8 @@ function AppShell() {
           currentUser={currentUser}
           onClose={() => setSelectedPastQuestion(null)}
           onLaunchSubjectCbt={handleLaunchCbt}
+          isSaved={isResourceSaved(selectedPastQuestion.id, 'past_question')}
+          onToggleBookmark={() => handleToggleBookmark(selectedPastQuestion.id, 'past_question')}
         />
       )}
     </div>

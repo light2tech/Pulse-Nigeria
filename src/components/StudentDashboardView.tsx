@@ -5,11 +5,13 @@ import {
   StudyMaterial,
   PastQuestionPaper,
   CbtLaunchConfig,
+  SavedResourceType,
 } from '../types';
 import { usePlatform } from '../lib/realtimeStore';
 import { updateProfileOnServer, uploadProfileAvatarToSupabase } from '../lib/supabaseService';
 import { getMaterialCoverImage } from '../data/mockData';
 import { EXAM_BODIES } from '../lib/subjectCatalog';
+import { BookmarkButton } from './BookmarkButton';
 
 interface StudentDashboardViewProps {
   currentUser: UserProfile;
@@ -18,7 +20,31 @@ interface StudentDashboardViewProps {
   onOpenMaterial: (material: StudyMaterial) => void;
   onOpenPastQuestion: (paper: PastQuestionPaper) => void;
   onLaunchCbt: (config: CbtLaunchConfig) => void;
+  isResourceSaved: (resourceId: string, resourceType: SavedResourceType) => boolean;
+  onToggleBookmark: (resourceId: string, resourceType: SavedResourceType) => void;
 }
+
+type ResolvedSavedEntry =
+  | {
+      key: string;
+      resourceId: string;
+      resourceType: 'material';
+      savedAt: string;
+      subject: string;
+      title: string;
+      summary: string;
+      material: StudyMaterial;
+    }
+  | {
+      key: string;
+      resourceId: string;
+      resourceType: 'past_question';
+      savedAt: string;
+      subject: string;
+      title: string;
+      summary: string;
+      paper: PastQuestionPaper;
+    };
 
 export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
   currentUser,
@@ -26,10 +52,12 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
   onOpenMaterial,
   onOpenPastQuestion,
   onLaunchCbt,
+  isResourceSaved,
+  onToggleBookmark,
 }) => {
   const { snapshot, refreshSnapshot } = usePlatform();
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'past_questions' | 'library' | 'history' | 'profile'
+    'overview' | 'saved' | 'past_questions' | 'library' | 'history' | 'profile'
   >('overview');
 
   const [searchMaterial, setSearchMaterial] = useState('');
@@ -38,6 +66,12 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
   const [pqSearch, setPqSearch] = useState('');
   const [pqSubjectFilter, setPqSubjectFilter] = useState('All');
   const [pqExamFilter, setPqExamFilter] = useState('All');
+
+  // Saved Resources View Filters
+  const [savedTypeFilter, setSavedTypeFilter] = useState<'all' | SavedResourceType>('all');
+  const [savedSubjectFilter, setSavedSubjectFilter] = useState<string>('All');
+  const [savedSortBy, setSavedSortBy] = useState<'recent' | 'title' | 'subject'>('recent');
+  const [savedSearch, setSavedSearch] = useState<string>('');
 
   // Editable Profile State
   const [editName, setEditName] = useState(currentUser.name);
@@ -174,6 +208,113 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
     });
   }, [snapshot.pastQuestions, pqSubjectFilter, pqExamFilter, pqSearch]);
 
+  // Resolve bookmarked items against live Supabase study materials & past question papers
+  const resolvedSavedEntries = useMemo<ResolvedSavedEntry[]>(() => {
+    const rawSaved = currentUser.savedResources || [];
+    if (rawSaved.length === 0) return [];
+
+    const materialById = new Map<string, StudyMaterial>();
+    for (const mat of snapshot.materials) {
+      materialById.set(mat.id, mat);
+    }
+
+    const paperById = new Map<string, PastQuestionPaper>();
+    for (const pq of snapshot.pastQuestions) {
+      paperById.set(pq.id, pq);
+    }
+
+    const entries: ResolvedSavedEntry[] = [];
+    for (const saved of rawSaved) {
+      if (saved.resourceType === 'material') {
+        const mat = materialById.get(saved.resourceId);
+        if (mat) {
+          entries.push({
+            key: `material:${mat.id}`,
+            resourceId: mat.id,
+            resourceType: 'material',
+            savedAt: saved.savedAt,
+            subject: mat.subject,
+            title: mat.title,
+            summary: mat.summary,
+            material: mat,
+          });
+        }
+      } else if (saved.resourceType === 'past_question') {
+        const pq = paperById.get(saved.resourceId);
+        if (pq) {
+          entries.push({
+            key: `past_question:${pq.id}`,
+            resourceId: pq.id,
+            resourceType: 'past_question',
+            savedAt: saved.savedAt,
+            subject: pq.subject,
+            title: pq.title,
+            summary: pq.summary,
+            paper: pq,
+          });
+        }
+      }
+    }
+    return entries;
+  }, [currentUser.savedResources, snapshot.materials, snapshot.pastQuestions]);
+
+  const savedMaterialsCount = useMemo(
+    () => resolvedSavedEntries.filter((e) => e.resourceType === 'material').length,
+    [resolvedSavedEntries]
+  );
+
+  const savedPastQuestionsCount = useMemo(
+    () => resolvedSavedEntries.filter((e) => e.resourceType === 'past_question').length,
+    [resolvedSavedEntries]
+  );
+
+  const savedDistinctSubjects = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of resolvedSavedEntries) {
+      if (entry.subject && !map.has(entry.subject.toLowerCase())) {
+        map.set(entry.subject.toLowerCase(), entry.subject);
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b));
+  }, [resolvedSavedEntries]);
+
+  const filteredSavedEntries = useMemo(() => {
+    const query = savedSearch.trim().toLowerCase();
+    const filtered = resolvedSavedEntries.filter((entry) => {
+      if (savedTypeFilter !== 'all' && entry.resourceType !== savedTypeFilter) {
+        return false;
+      }
+      if (
+        savedSubjectFilter !== 'All' &&
+        entry.subject.toLowerCase() !== savedSubjectFilter.toLowerCase() &&
+        !savedSubjectFilter.toLowerCase().includes(entry.subject.toLowerCase())
+      ) {
+        return false;
+      }
+      if (query) {
+        const extraMeta =
+          entry.resourceType === 'past_question'
+            ? `${entry.paper.examBody} ${entry.paper.examYear} ${entry.paper.paperType}`
+            : entry.material.level;
+        const searchable = `${entry.title} ${entry.subject} ${entry.summary} ${extraMeta}`.toLowerCase();
+        if (!searchable.includes(query)) return false;
+      }
+      return true;
+    });
+
+    const sorted = [...filtered];
+    if (savedSortBy === 'title') {
+      sorted.sort((a, b) => a.title.localeCompare(b.title));
+    } else if (savedSortBy === 'subject') {
+      sorted.sort((a, b) => a.subject.localeCompare(b.subject) || a.title.localeCompare(b.title));
+    } else {
+      sorted.sort(
+        (a, b) => new Date(b.savedAt || 0).getTime() - new Date(a.savedAt || 0).getTime()
+      );
+    }
+    return sorted;
+  }, [resolvedSavedEntries, savedTypeFilter, savedSubjectFilter, savedSearch, savedSortBy]);
+
   const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -273,6 +414,23 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
             </button>
 
             <button
+              onClick={() => setActiveTab('saved')}
+              className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                activeTab === 'saved'
+                  ? 'bg-zinc-800 text-white font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+              }`}
+            >
+              <span
+                className="material-symbols-outlined text-lg text-emerald-400"
+                style={{ fontVariationSettings: resolvedSavedEntries.length > 0 ? "'FILL' 1" : "'FILL' 0" }}
+              >
+                bookmark
+              </span>
+              <span className="tabular-nums">Saved Resources ({resolvedSavedEntries.length})</span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('past_questions')}
               className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg font-medium whitespace-nowrap transition-colors cursor-pointer ${
                 activeTab === 'past_questions'
@@ -340,19 +498,25 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
               <span>Student Workspace</span>
               <span aria-hidden="true">/</span>
               <span className="text-zinc-200 capitalize">
-                {activeTab === 'past_questions' ? 'Past Questions & Answers' : activeTab}
+                {activeTab === 'past_questions'
+                  ? 'Past Questions & Answers'
+                  : activeTab === 'saved'
+                    ? 'Saved Resources'
+                    : activeTab}
               </span>
             </div>
             <h1 className="font-headline text-2xl font-bold text-white">
               {activeTab === 'overview'
                 ? `Welcome back, ${currentUser.name.split(' ')[0]}`
-                : activeTab === 'past_questions'
-                  ? 'Past Questions & Official Answers Archive'
-                  : activeTab === 'library'
-                    ? 'Curriculum Reading Materials'
-                    : activeTab === 'history'
-                      ? 'Personal Examination Log'
-                      : 'Account & Profile Preferences'}
+                : activeTab === 'saved'
+                  ? 'Saved Study Materials & Past Questions'
+                  : activeTab === 'past_questions'
+                    ? 'Past Questions & Official Answers Archive'
+                    : activeTab === 'library'
+                      ? 'Curriculum Reading Materials'
+                      : activeTab === 'history'
+                        ? 'Personal Examination Log'
+                        : 'Account & Profile Preferences'}
             </h1>
           </div>
 
@@ -521,12 +685,14 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
                           className="p-4 bg-zinc-950 border border-zinc-800 hover:border-zinc-700 rounded-xl flex flex-col justify-between transition-colors"
                         >
                           <div>
-                            <div className="text-[11px] text-zinc-400 mb-1.5 tabular-nums">
-                              <span className="text-emerald-400 font-medium">{paper.subject}</span>
-                              <span>
-                                {' '}
-                                · {paper.examBody} {paper.examYear}
-                              </span>
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                              <div className="text-[11px] text-zinc-400 tabular-nums truncate">
+                                <span className="text-emerald-400 font-medium">{paper.subject}</span>
+                                <span>
+                                  {' '}
+                                  · {paper.examBody} {paper.examYear}
+                                </span>
+                              </div>
                             </div>
                             <h3 className="text-sm font-semibold text-white mb-1 line-clamp-1">
                               {paper.title}
@@ -536,12 +702,18 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
                               {paper.attachment ? ` · Attached: ${paper.attachment.fileName}` : ''}
                             </p>
                           </div>
-                          <button
-                            onClick={() => onOpenPastQuestion(paper)}
-                            className="w-full py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-200 cursor-pointer"
-                          >
-                            Open Questions &amp; Answers
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => onOpenPastQuestion(paper)}
+                              className="flex-1 py-2 px-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-200 cursor-pointer whitespace-nowrap"
+                            >
+                              Open Q&amp;A
+                            </button>
+                            <BookmarkButton
+                              isSaved={isResourceSaved(paper.id, 'past_question')}
+                              onToggle={() => onToggleBookmark(paper.id, 'past_question')}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -583,12 +755,18 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
                             </h3>
                             <p className="text-xs text-zinc-400 line-clamp-2 mb-4">{mat.summary}</p>
                           </div>
-                          <button
-                            onClick={() => onOpenMaterial(mat)}
-                            className="w-full py-2 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-200 cursor-pointer"
-                          >
-                            Read Material
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => onOpenMaterial(mat)}
+                              className="flex-1 py-2 px-3 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-200 cursor-pointer whitespace-nowrap"
+                            >
+                              Read Material
+                            </button>
+                            <BookmarkButton
+                              isSaved={isResourceSaved(mat.id, 'material')}
+                              onToggle={() => onToggleBookmark(mat.id, 'material')}
+                            />
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -596,15 +774,79 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
                 </section>
               </div>
 
-              {/* Right 4 Cols: Personal Activity Stream */}
-              <div className="lg:col-span-4">
-                <section className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 h-full flex flex-col">
+              {/* Right 4 Cols: Saved Revision Queue + Personal Activity Stream */}
+              <div className="lg:col-span-4 space-y-6">
+                <section className="bg-zinc-900 border border-zinc-800 rounded-xl p-6">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="font-headline text-base font-bold text-white">
+                      Saved Resources
+                    </h2>
+                    <button
+                      onClick={() => setActiveTab('saved')}
+                      className="text-xs font-semibold text-emerald-400 hover:underline cursor-pointer tabular-nums"
+                    >
+                      View All ({resolvedSavedEntries.length})
+                    </button>
+                  </div>
+
+                  {resolvedSavedEntries.length === 0 ? (
+                    <div className="py-5 text-center">
+                      <span className="material-symbols-outlined text-zinc-600 text-2xl mb-1.5">
+                        bookmark
+                      </span>
+                      <p className="text-xs font-medium text-zinc-300">No saved items yet</p>
+                      <p className="text-[11px] text-zinc-500 mt-1">
+                        Click Save on any reading material or past paper to keep it here for quick revision.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-zinc-800/80">
+                      {resolvedSavedEntries.slice(0, 4).map((entry) => (
+                        <div key={entry.key} className="py-3 first:pt-0 last:pb-0 flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-[11px] text-zinc-400 truncate">
+                              <span className="text-emerald-400 font-medium">{entry.subject}</span>
+                              <span>
+                                {' '}
+                                · {entry.resourceType === 'past_question' ? 'Past Q&A' : 'Study Notes'}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                entry.resourceType === 'material'
+                                  ? onOpenMaterial(entry.material)
+                                  : onOpenPastQuestion(entry.paper)
+                              }
+                              className="text-left text-xs font-semibold text-zinc-100 hover:text-emerald-400 transition-colors line-clamp-1 mt-0.5 cursor-pointer"
+                            >
+                              {entry.title}
+                            </button>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              entry.resourceType === 'material'
+                                ? onOpenMaterial(entry.material)
+                                : onOpenPastQuestion(entry.paper)
+                            }
+                            className="px-2.5 py-1 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 rounded-md text-[11px] font-medium text-zinc-200 shrink-0 cursor-pointer"
+                          >
+                            Open
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 flex flex-col">
                   <h2 className="font-headline text-base font-bold text-white mb-4">
                     Recent Personal Activity
                   </h2>
 
                   {myActivities.length === 0 && myExamResults.length === 0 ? (
-                    <div className="flex-1 flex flex-col items-center justify-center text-center py-10">
+                    <div className="flex-1 flex flex-col items-center justify-center text-center py-8">
                       <span className="material-symbols-outlined text-zinc-600 text-3xl mb-2">
                         assignment
                       </span>
@@ -644,6 +886,325 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
                 </section>
               </div>
             </div>
+          </div>
+        )}
+
+        {/* === SAVED RESOURCES TAB === */}
+        {activeTab === 'saved' && (
+          <div className="space-y-6">
+            {/* Summary Metrics Strip */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+                <div className="text-xs text-zinc-400">Total Saved Resources</div>
+                <div className="font-headline text-2xl font-bold text-white tabular-nums mt-1.5">
+                  {resolvedSavedEntries.length}
+                </div>
+                <div className="text-[11px] text-zinc-500 mt-1">Synced to your account</div>
+              </div>
+
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+                <div className="text-xs text-zinc-400">Reading Materials</div>
+                <div className="font-headline text-2xl font-bold text-white tabular-nums mt-1.5">
+                  {savedMaterialsCount}
+                </div>
+                <div className="text-[11px] text-zinc-500 mt-1">Syllabus notes &amp; handouts</div>
+              </div>
+
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+                <div className="text-xs text-zinc-400">Past Q&amp;A Papers</div>
+                <div className="font-headline text-2xl font-bold text-white tabular-nums mt-1.5">
+                  {savedPastQuestionsCount}
+                </div>
+                <div className="text-[11px] text-zinc-500 mt-1">Official marking schemes</div>
+              </div>
+
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5">
+                <div className="text-xs text-zinc-400">Subjects Bookmarked</div>
+                <div className="font-headline text-2xl font-bold text-emerald-400 tabular-nums mt-1.5">
+                  {savedDistinctSubjects.length}
+                </div>
+                <div className="text-[11px] text-zinc-500 mt-1">Active revision subjects</div>
+              </div>
+            </div>
+
+            {/* Interactive Filter & Search Controls */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="inline-flex items-center p-1 bg-zinc-900 border border-zinc-800 rounded-lg text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setSavedTypeFilter('all')}
+                    className={`px-3 py-1.5 rounded-md font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer tabular-nums ${
+                      savedTypeFilter === 'all'
+                        ? 'bg-zinc-800 text-white font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    All Saved ({resolvedSavedEntries.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSavedTypeFilter('material')}
+                    className={`px-3 py-1.5 rounded-md font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer tabular-nums ${
+                      savedTypeFilter === 'material'
+                        ? 'bg-zinc-800 text-white font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Reading Materials ({savedMaterialsCount})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSavedTypeFilter('past_question')}
+                    className={`px-3 py-1.5 rounded-md font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer tabular-nums ${
+                      savedTypeFilter === 'past_question'
+                        ? 'bg-zinc-800 text-white font-semibold'
+                        : 'text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    Past Questions ({savedPastQuestionsCount})
+                  </button>
+                </div>
+
+                {savedDistinctSubjects.length > 0 && (
+                  <select
+                    value={savedSubjectFilter}
+                    onChange={(e) => setSavedSubjectFilter(e.target.value)}
+                    aria-label="Filter saved resources by subject"
+                    className="px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="All">All Subjects</option>
+                    {savedDistinctSubjects.map((subj) => (
+                      <option key={subj} value={subj}>
+                        {subj}
+                      </option>
+                    ))}
+                  </select>
+                )}
+
+                {resolvedSavedEntries.length > 1 && (
+                  <select
+                    value={savedSortBy}
+                    onChange={(e) =>
+                      setSavedSortBy(e.target.value as 'recent' | 'title' | 'subject')
+                    }
+                    aria-label="Sort saved resources"
+                    className="px-3 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-zinc-200 focus:outline-none focus:border-emerald-500"
+                  >
+                    <option value="recent">Sort: Recently Saved</option>
+                    <option value="subject">Sort: Subject A–Z</option>
+                    <option value="title">Sort: Title A–Z</option>
+                  </select>
+                )}
+              </div>
+
+              <input
+                type="text"
+                value={savedSearch}
+                onChange={(e) => setSavedSearch(e.target.value)}
+                placeholder="Search saved notes and past papers..."
+                className="px-3.5 py-2 bg-zinc-900 border border-zinc-800 rounded-lg text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-emerald-500 lg:w-72"
+              />
+            </div>
+
+            {/* Saved Resources Content Area */}
+            {resolvedSavedEntries.length === 0 ? (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-12 text-center">
+                <span className="material-symbols-outlined text-3xl text-zinc-500 mb-2">
+                  bookmark_add
+                </span>
+                <h2 className="font-headline text-base font-bold text-white">
+                  Your Saved Resources list is empty
+                </h2>
+                <p className="text-xs text-zinc-400 mt-1.5 max-w-md mx-auto leading-relaxed">
+                  Bookmark favorite JAMB/WAEC/NECO reading materials and past question papers while studying to keep them organized here for rapid exam revision.
+                </p>
+                <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('library')}
+                    className="px-4 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Browse Reading Materials
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('past_questions')}
+                    className="px-4 py-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 font-medium text-xs rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                  >
+                    Explore Past Questions
+                  </button>
+                </div>
+              </div>
+            ) : filteredSavedEntries.length === 0 ? (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-12 text-center">
+                <p className="text-sm font-semibold text-zinc-200">
+                  No saved resources match your current filter
+                </p>
+                <p className="text-xs text-zinc-500 mt-1 mb-4">
+                  Try clearing the search query or switching resource categories.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSavedTypeFilter('all');
+                    setSavedSubjectFilter('All');
+                    setSavedSearch('');
+                  }}
+                  className="px-4 py-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-xs font-medium text-zinc-200 rounded-lg cursor-pointer"
+                >
+                  Reset Filters
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {filteredSavedEntries.map((entry) => {
+                  const savedDateLabel = entry.savedAt
+                    ? new Date(entry.savedAt).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: '2-digit',
+                        year: 'numeric',
+                      })
+                    : '';
+
+                  if (entry.resourceType === 'material') {
+                    const mat = entry.material;
+                    return (
+                      <div
+                        key={entry.key}
+                        className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl overflow-hidden flex flex-col justify-between transition-colors"
+                      >
+                        <div>
+                          <div className="h-32 bg-zinc-950 border-b border-zinc-800 overflow-hidden">
+                            <img
+                              src={getMaterialCoverImage(mat.subject, mat.imageUrl)}
+                              alt={mat.title}
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover opacity-85"
+                            />
+                          </div>
+                          <div className="p-5">
+                            <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-400 mb-2">
+                              <span className="text-emerald-400 font-semibold">{mat.subject}</span>
+                              <span aria-hidden="true">·</span>
+                              <span>Reading Material</span>
+                              <span aria-hidden="true">·</span>
+                              <span>{mat.level}</span>
+                              {savedDateLabel && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="tabular-nums text-zinc-500">
+                                    Saved {savedDateLabel}
+                                  </span>
+                                </>
+                              )}
+                            </div>
+
+                            <h3 className="font-headline text-base font-bold text-white mb-1.5">
+                              {mat.title}
+                            </h3>
+                            <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed">
+                              {mat.summary}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="px-5 pb-5 pt-3 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => onOpenMaterial(mat)}
+                              className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold rounded-lg text-xs transition-colors cursor-pointer whitespace-nowrap"
+                            >
+                              Read Material
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onLaunchCbt({ mode: 'subject', subject: mat.subject })
+                              }
+                              className="px-3 py-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 font-medium rounded-lg text-xs transition-colors cursor-pointer whitespace-nowrap"
+                            >
+                              Drill CBT
+                            </button>
+                          </div>
+
+                          <BookmarkButton
+                            isSaved={true}
+                            onToggle={() => onToggleBookmark(mat.id, 'material')}
+                          />
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  const paper = entry.paper;
+                  return (
+                    <div
+                      key={entry.key}
+                      className="bg-zinc-900 border border-zinc-800 hover:border-zinc-700 rounded-xl p-5 flex flex-col justify-between transition-colors"
+                    >
+                      <div>
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-400 mb-2">
+                          <span className="text-emerald-400 font-semibold">{paper.subject}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>Past Questions</span>
+                          <span aria-hidden="true">·</span>
+                          <span className="tabular-nums">
+                            {paper.examBody} {paper.examYear}
+                          </span>
+                          {savedDateLabel && (
+                            <>
+                              <span aria-hidden="true">·</span>
+                              <span className="tabular-nums text-zinc-500">
+                                Saved {savedDateLabel}
+                              </span>
+                            </>
+                          )}
+                        </div>
+
+                        <h3 className="font-headline text-base font-bold text-white mb-1.5">
+                          {paper.title}
+                        </h3>
+                        <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed mb-3">
+                          {paper.summary}
+                        </p>
+                        <div className="text-[11px] text-zinc-500 tabular-nums mb-4">
+                          {paper.items.length} Q&amp;A item(s) ·{' '}
+                          {paper.attachment ? `Attached: ${paper.attachment.fileName}` : paper.paperType}
+                        </div>
+                      </div>
+
+                      <div className="pt-3 border-t border-zinc-800/80 flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => onOpenPastQuestion(paper)}
+                            className="px-3.5 py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold rounded-lg text-xs transition-colors cursor-pointer whitespace-nowrap"
+                          >
+                            Open Q&amp;A Paper
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onLaunchCbt({ mode: 'subject', subject: paper.subject })
+                            }
+                            className="px-3 py-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 font-medium rounded-lg text-xs transition-colors cursor-pointer whitespace-nowrap"
+                          >
+                            Drill CBT
+                          </button>
+                        </div>
+
+                        <BookmarkButton
+                          isSaved={true}
+                          onToggle={() => onToggleBookmark(paper.id, 'past_question')}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         )}
 
@@ -723,12 +1284,18 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
                         <span>{paper.items.length} Q&amp;A item(s)</span>
                         <span>{paper.attachment ? 'PDF / File Attached' : paper.paperType}</span>
                       </div>
-                      <button
-                        onClick={() => onOpenPastQuestion(paper)}
-                        className="w-full py-2 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold rounded-lg text-xs cursor-pointer"
-                      >
-                        Study Questions &amp; Answers
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => onOpenPastQuestion(paper)}
+                          className="flex-1 py-2 px-3 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold rounded-lg text-xs cursor-pointer whitespace-nowrap"
+                        >
+                          Study Q&amp;A Paper
+                        </button>
+                        <BookmarkButton
+                          isSaved={isResourceSaved(paper.id, 'past_question')}
+                          onToggle={() => onToggleBookmark(paper.id, 'past_question')}
+                        />
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -806,13 +1373,17 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
                         )}
                       </div>
                     </div>
-                    <div className="px-5 pb-5">
+                    <div className="px-5 pb-5 flex items-center gap-2">
                       <button
                         onClick={() => onOpenMaterial(mat)}
-                        className="w-full py-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-200 cursor-pointer"
+                        className="flex-1 py-2 px-3 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-200 cursor-pointer whitespace-nowrap"
                       >
                         Open Reading Material
                       </button>
+                      <BookmarkButton
+                        isSaved={isResourceSaved(mat.id, 'material')}
+                        onToggle={() => onToggleBookmark(mat.id, 'material')}
+                      />
                     </div>
                   </div>
                 ))}

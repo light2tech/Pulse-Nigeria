@@ -1,5 +1,12 @@
 import { supabase } from './supabase';
-import { PlatformSnapshot, UserProfile, ExamResult, ResourceAttachment } from '../types';
+import {
+  PlatformSnapshot,
+  UserProfile,
+  ExamResult,
+  ResourceAttachment,
+  SavedResourceItem,
+  SavedResourceType,
+} from '../types';
 
 async function apiRequest<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -50,23 +57,27 @@ export async function signInSupabaseAccount(params: {
   requestedRole?: 'student' | 'admin';
 }): Promise<UserProfile> {
   const cleanEmail = params.email.trim().toLowerCase();
-  const { data, error } = await supabase.auth.signInWithPassword({
-    email: cleanEmail,
-    password: params.password,
-  });
 
-  if (error || !data?.user) {
-    throw new Error(error?.message || 'Invalid email or password.');
-  }
-
-  const { user } = await apiRequest<{ user: UserProfile }>('/api/auth/sync-profile', {
+  const { user, session } = await apiRequest<{
+    user: UserProfile;
+    session?: { access_token: string; refresh_token: string } | null;
+  }>('/api/auth/login', {
     method: 'POST',
     body: JSON.stringify({
-      userId: data.user.id,
       email: cleanEmail,
+      password: params.password,
       requestedRole: params.requestedRole,
     }),
   });
+
+  if (session?.access_token && session?.refresh_token) {
+    await supabase.auth
+      .setSession({
+        access_token: session.access_token,
+        refresh_token: session.refresh_token,
+      })
+      .catch(() => {});
+  }
 
   return user;
 }
@@ -98,6 +109,25 @@ export async function updateProfileOnServer(
     body: JSON.stringify(updates),
   });
   return user;
+}
+
+export async function toggleResourceBookmarkOnServer(params: {
+  userId: string;
+  resourceId: string;
+  resourceType: SavedResourceType;
+  action?: 'toggle' | 'add' | 'remove';
+}): Promise<{ savedResources: SavedResourceItem[]; isSaved: boolean; snapshot?: PlatformSnapshot }> {
+  return apiRequest<{ savedResources: SavedResourceItem[]; isSaved: boolean; snapshot?: PlatformSnapshot }>(
+    `/api/profile/${encodeURIComponent(params.userId)}/bookmarks`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        resourceId: params.resourceId,
+        resourceType: params.resourceType,
+        action: params.action || 'toggle',
+      }),
+    }
+  );
 }
 
 export async function uploadProfileAvatarToSupabase(file: File, userId: string): Promise<string> {

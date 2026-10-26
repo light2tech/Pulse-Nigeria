@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StudyMaterial, AppView, UserProfile, CbtLaunchConfig } from '../types';
 import { usePlatform } from '../lib/realtimeStore';
+import { BookmarkButton } from './BookmarkButton';
 
 interface MaterialReaderModalProps {
   material: StudyMaterial;
@@ -8,6 +9,8 @@ interface MaterialReaderModalProps {
   onClose: () => void;
   onLaunchSubjectCbt: (config: CbtLaunchConfig) => void;
   setCurrentView: (view: AppView) => void;
+  isSaved: boolean;
+  onToggleBookmark: () => void;
 }
 
 export const MaterialReaderModal: React.FC<MaterialReaderModalProps> = ({
@@ -15,6 +18,8 @@ export const MaterialReaderModal: React.FC<MaterialReaderModalProps> = ({
   currentUser,
   onClose,
   onLaunchSubjectCbt,
+  isSaved,
+  onToggleBookmark,
 }) => {
   const [currentPage, setCurrentPage] = useState(0);
   const [viewMode, setViewMode] = useState<'notes' | 'attachment'>('notes');
@@ -68,13 +73,16 @@ export const MaterialReaderModal: React.FC<MaterialReaderModalProps> = ({
             <h2 className="font-headline text-xl font-bold text-white">{material.title}</h2>
           </div>
 
-          <button
-            onClick={onClose}
-            className="text-zinc-400 hover:text-white p-1.5 rounded-lg hover:bg-zinc-800 cursor-pointer"
-            aria-label="Close study reader"
-          >
-            <span className="material-symbols-outlined text-xl">close</span>
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <BookmarkButton isSaved={isSaved} onToggle={onToggleBookmark} size="sm" />
+            <button
+              onClick={onClose}
+              className="text-zinc-400 hover:text-white p-1.5 rounded-lg hover:bg-zinc-800 cursor-pointer"
+              aria-label="Close study reader"
+            >
+              <span className="material-symbols-outlined text-xl">close</span>
+            </button>
+          </div>
         </div>
 
         {/* Optional Attachment Switcher */}

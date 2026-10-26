@@ -184,6 +184,11 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
+  const presenceChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const clientIdRef = useRef<string>(
+    `client-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+  );
+  const connectedAtRef = useRef<string>(new Date().toISOString());
   const latestPresenceRef = useRef<{
     view: AppView;
     user: UserProfile | null;
@@ -197,11 +202,13 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const refreshSnapshot = useCallback(async () => {
     try {
       const data = await fetchSnapshotFromServer();
-      setSnapshot({
+      setSnapshot((prev) => ({
         ...emptySnapshot,
         ...data,
         pastQuestions: Array.isArray(data.pastQuestions) ? data.pastQuestions : [],
-      });
+        presence:
+          Array.isArray(data.presence) && data.presence.length > 0 ? data.presence : prev.presence,
+      }));
       setError(null);
     } catch (err: any) {
       setError(err?.message || 'Failed to sync with Supabase');
@@ -210,83 +217,108 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, []);
 
-  const sendPresenceOverWs = useCallback(() => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const sendPresenceUpdate = useCallback(() => {
     const { view, user, cbtProgress } = latestPresenceRef.current;
-    ws.send(
-      JSON.stringify({
-        type: 'presence:update',
-        payload: {
-          userId: user?.id || null,
-          userName: user?.name || 'Visitor',
-          userEmail: user?.email || null,
-          role: user?.role || 'guest',
-          view,
-          cbtProgress,
-        },
-      })
-    );
+    const payload = {
+      clientId: clientIdRef.current,
+      userId: user?.id || null,
+      userName: user?.name || 'Visitor',
+      userEmail: user?.email || null,
+      role: user?.role || 'guest',
+      view,
+      connectedAt: connectedAtRef.current,
+      updatedAt: new Date().toISOString(),
+      cbtProgress,
+    };
+
+    const ws = wsRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(
+        JSON.stringify({
+          type: 'presence:update',
+          payload,
+        })
+      );
+    }
+
+    const pChannel = presenceChannelRef.current;
+    if (pChannel) {
+      pChannel.track(payload).catch(() => {});
+    }
   }, []);
 
   const reportPresence = useCallback(
     (view: AppView, user: UserProfile | null, cbtProgress: CbtProgressPayload | null = null) => {
       latestPresenceRef.current = { view, user, cbtProgress };
-      sendPresenceOverWs();
+      sendPresenceUpdate();
     },
-    [sendPresenceOverWs]
+    [sendPresenceUpdate]
   );
 
   useEffect(() => {
     let unmounted = false;
+    let wsEverOpened = false;
+    let wsFailureCount = 0;
+    const isServerlessHost =
+      typeof window !== 'undefined' && /\.vercel\.app$/i.test(window.location.hostname);
 
     refreshSnapshot();
 
     const connectWs = () => {
-      if (unmounted) return;
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+      if (unmounted || isServerlessHost) return;
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${protocol}//${window.location.host}/ws`;
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
 
-      ws.onopen = () => {
-        if (unmounted) return;
-        setWsConnected(true);
-        sendPresenceOverWs();
-      };
+        ws.onopen = () => {
+          if (unmounted) return;
+          wsEverOpened = true;
+          wsFailureCount = 0;
+          setWsConnected(true);
+          sendPresenceUpdate();
+        };
 
-      ws.onmessage = (event) => {
-        if (unmounted) return;
-        try {
-          const msg = JSON.parse(event.data);
-          if (msg.type === 'snapshot' && msg.payload) {
-            setSnapshot({
-              ...emptySnapshot,
-              ...msg.payload,
-              pastQuestions: Array.isArray(msg.payload.pastQuestions) ? msg.payload.pastQuestions : [],
-            });
-            setIsLoading(false);
-            setError(null);
-          } else if (msg.type === 'presence' && Array.isArray(msg.payload)) {
-            setSnapshot((prev) => ({
-              ...prev,
-              presence: msg.payload,
-            }));
+        ws.onmessage = (event) => {
+          if (unmounted) return;
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg.type === 'snapshot' && msg.payload) {
+              setSnapshot({
+                ...emptySnapshot,
+                ...msg.payload,
+                pastQuestions: Array.isArray(msg.payload.pastQuestions) ? msg.payload.pastQuestions : [],
+              });
+              setIsLoading(false);
+              setError(null);
+            } else if (msg.type === 'presence' && Array.isArray(msg.payload)) {
+              setSnapshot((prev) => ({
+                ...prev,
+                presence: msg.payload,
+              }));
+            }
+          } catch {
+            // ignore malformed messages
           }
-        } catch {
-          // ignore malformed messages
-        }
-      };
+        };
 
-      ws.onclose = () => {
-        if (unmounted) return;
+        ws.onclose = () => {
+          if (unmounted) return;
+          setWsConnected(false);
+          wsFailureCount += 1;
+          // Stop retrying /ws on serverless platforms where /ws endpoint does not exist
+          if (wsEverOpened || wsFailureCount < 2) {
+            reconnectTimerRef.current = window.setTimeout(connectWs, 3000);
+          }
+        };
+
+        ws.onerror = () => {
+          ws.close();
+        };
+      } catch {
         setWsConnected(false);
-        reconnectTimerRef.current = window.setTimeout(connectWs, 2500);
-      };
-
-      ws.onerror = () => {
-        ws.close();
-      };
+      }
     };
 
     connectWs();
@@ -300,21 +332,59 @@ export const PlatformProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
     window.addEventListener('focus', handleFocus);
 
-    const channel = supabase
-      .channel('edupulse-db-sync')
-      .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+    // Periodic background refresh when running on serverless hosts (e.g. Vercel) without /ws
+    const pollInterval = window.setInterval(() => {
+      if (
+        document.visibilityState === 'visible' &&
+        (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN)
+      ) {
         refreshSnapshot();
-      })
-      .subscribe();
+      }
+    }, 15000);
+
+    const isClientSupabaseConfigured =
+      !String((supabase as any)?.supabaseUrl || '').includes('placeholder.supabase.co');
+
+    let dbChannel: ReturnType<typeof supabase.channel> | null = null;
+    if (isClientSupabaseConfigured) {
+      dbChannel = supabase
+        .channel('edupulse-db-sync', {
+          config: { presence: { key: clientIdRef.current } },
+        })
+        .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+          refreshSnapshot();
+        })
+        .on('presence', { event: 'sync' }, () => {
+          if (!dbChannel || wsRef.current?.readyState === WebSocket.OPEN) return;
+          const state = dbChannel.presenceState();
+          const list: any[] = [];
+          for (const entries of Object.values(state)) {
+            if (Array.isArray(entries) && entries[0]) {
+              list.push(entries[0]);
+            }
+          }
+          if (list.length > 0) {
+            setSnapshot((prev) => ({ ...prev, presence: list }));
+          }
+        })
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            presenceChannelRef.current = dbChannel;
+            sendPresenceUpdate();
+          }
+        });
+    }
 
     return () => {
       unmounted = true;
       window.removeEventListener('focus', handleFocus);
+      window.clearInterval(pollInterval);
       if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
       if (wsRef.current) wsRef.current.close();
-      supabase.removeChannel(channel);
+      presenceChannelRef.current = null;
+      if (dbChannel) supabase.removeChannel(dbChannel);
     };
-  }, [refreshSnapshot, sendPresenceOverWs]);
+  }, [refreshSnapshot, sendPresenceUpdate]);
 
   const applyServerSnapshot = (res: { snapshot?: PlatformSnapshot }) => {
     if (res?.snapshot) {

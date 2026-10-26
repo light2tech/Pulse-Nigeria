@@ -8,6 +8,14 @@ export type AppView =
 
 export type UserRole = 'student' | 'admin';
 
+export type SavedResourceType = 'material' | 'past_question';
+
+export interface SavedResourceItem {
+  resourceId: string;
+  resourceType: SavedResourceType;
+  savedAt: string;
+}
+
 export interface UserProfile {
   id: string;
   name: string;
@@ -17,6 +25,7 @@ export interface UserProfile {
   studentClass?: string;
   avatarUrl: string;
   streakDays: number;
+  savedResources?: SavedResourceItem[];
   createdAt?: string;
   lastSignInAt?: string | null;
   emailVerified?: boolean;
@@ -167,6 +176,7 @@ export interface PlatformSnapshot {
   recentActivities: RecentActivityItem[];
   presence: LivePresenceSession[];
   supabaseConnected: boolean;
+  configMissing?: boolean;
   syncedAt: string;
 }
 

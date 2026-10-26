@@ -5,9 +5,11 @@ import {
   PastQuestionPaper,
   CbtLaunchConfig,
   UserProfile,
+  SavedResourceType,
 } from '../types';
 import { usePlatform } from '../lib/realtimeStore';
 import { VISUAL_ASSETS, getMaterialCoverImage } from '../data/mockData';
+import { BookmarkButton } from './BookmarkButton';
 
 interface LandingViewProps {
   setCurrentView: (view: AppView) => void;
@@ -15,6 +17,8 @@ interface LandingViewProps {
   onOpenMaterial: (material: StudyMaterial) => void;
   onOpenPastQuestion: (paper: PastQuestionPaper) => void;
   onLaunchCbt: (config: CbtLaunchConfig) => void;
+  isResourceSaved: (resourceId: string, resourceType: SavedResourceType) => boolean;
+  onToggleBookmark: (resourceId: string, resourceType: SavedResourceType) => void;
 }
 
 export const LandingView: React.FC<LandingViewProps> = ({
@@ -23,6 +27,8 @@ export const LandingView: React.FC<LandingViewProps> = ({
   onOpenMaterial,
   onOpenPastQuestion,
   onLaunchCbt,
+  isResourceSaved,
+  onToggleBookmark,
 }) => {
   const { snapshot, isLoading } = usePlatform();
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState<string>('All');
@@ -356,18 +362,24 @@ export const LandingView: React.FC<LandingViewProps> = ({
                       </div>
                     </div>
 
-                    <div className="px-5 pb-5 pt-2 flex items-center justify-between">
-                      <span className="text-[11px] text-zinc-500 tabular-nums">
+                    <div className="px-5 pb-5 pt-2 flex items-center justify-between gap-2">
+                      <span className="text-[11px] text-zinc-500 tabular-nums truncate">
                         {mat.attachment
                           ? 'PDF / File Attached'
                           : `${mat.content?.length || 1} section${(mat.content?.length || 1) > 1 ? 's' : ''}`}
                       </span>
-                      <button
-                        onClick={() => onOpenMaterial(mat)}
-                        className="px-3.5 py-1.5 bg-zinc-950 hover:bg-zinc-800 text-zinc-200 border border-zinc-800 rounded-lg text-xs font-medium transition-colors cursor-pointer"
-                      >
-                        Read Material
-                      </button>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <BookmarkButton
+                          isSaved={isResourceSaved(mat.id, 'material')}
+                          onToggle={() => onToggleBookmark(mat.id, 'material')}
+                        />
+                        <button
+                          onClick={() => onOpenMaterial(mat)}
+                          className="px-3.5 py-1.5 bg-zinc-950 hover:bg-zinc-800 text-zinc-200 border border-zinc-800 rounded-lg text-xs font-medium transition-colors cursor-pointer whitespace-nowrap"
+                        >
+                          Read Material
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -415,16 +427,22 @@ export const LandingView: React.FC<LandingViewProps> = ({
                     </p>
                   </div>
 
-                  <div className="pt-4 border-t border-zinc-800/80 flex items-center justify-between">
-                    <span className="text-[11px] text-zinc-500 tabular-nums">
+                  <div className="pt-4 border-t border-zinc-800/80 flex items-center justify-between gap-2">
+                    <span className="text-[11px] text-zinc-500 tabular-nums truncate">
                       {paper.items.length} Q&amp;A{paper.attachment ? ' + File' : ''}
                     </span>
-                    <button
-                      onClick={() => onOpenPastQuestion(paper)}
-                      className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold rounded-lg text-xs transition-colors cursor-pointer"
-                    >
-                      Open Q&amp;A Paper
-                    </button>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <BookmarkButton
+                        isSaved={isResourceSaved(paper.id, 'past_question')}
+                        onToggle={() => onToggleBookmark(paper.id, 'past_question')}
+                      />
+                      <button
+                        onClick={() => onOpenPastQuestion(paper)}
+                        className="px-3.5 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold rounded-lg text-xs transition-colors cursor-pointer whitespace-nowrap"
+                      >
+                        Open Q&amp;A Paper
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}
