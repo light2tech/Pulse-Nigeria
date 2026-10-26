@@ -20,6 +20,7 @@ import { getActiveSessionUser, saveUserProfile, clearActiveSession } from './lib
 import { supabase } from './lib/supabase';
 import { syncAuthenticatedProfile, toggleResourceBookmarkOnServer } from './lib/supabaseService';
 import { PlatformProvider, usePlatform } from './lib/realtimeStore';
+import { SpeedInsights } from '@vercel/speed-insights/react';
 
 function AppShell() {
   const { reportPresence, snapshot } = usePlatform();
@@ -308,6 +309,7 @@ export default function App() {
   return (
     <PlatformProvider>
       <AppShell />
+      <SpeedInsights />
     </PlatformProvider>
   );
 }
