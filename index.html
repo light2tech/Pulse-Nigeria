@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function () {
+        function isExtensionError(msg, stack, filename) {
+          var combined = String(msg || '') + ' ' + String(stack || '') + ' ' + String(filename || '');
+          return (
+            combined.indexOf('chrome-extension://') !== -1 ||
+            combined.indexOf('moz-extension://') !== -1 ||
+            combined.indexOf('safari-extension://') !== -1 ||
+            combined.indexOf('Failed to connect to MetaMask') !== -1 ||
+            combined.indexOf('nkbihfbeogaeaoehlefnkodbefgpgknn') !== -1
+          );
+        }
+
+        window.addEventListener(
+          'error',
+          function (event) {
+            var err = event.error;
+            if (isExtensionError(event.message || (err && err.message), err && err.stack, event.filename)) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+              return true;
+            }
+          },
+          true
+        );
+
+        window.addEventListener(
+          'unhandledrejection',
+          function (event) {
+            var reason = event.reason;
+            var msg = typeof reason === 'string' ? reason : reason && reason.message;
+            var stack = reason && reason.stack;
+            if (isExtensionError(msg, stack, '')) {
+              event.preventDefault();
+              event.stopImmediatePropagation();
+            }
+          },
+          true
+        );
+      })();
+    </script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EduPulse Nigeria</title>
+    <meta
+      name="description"
+      content="Empowering the next generation of scholars with realistic CBT practice (JAMB, WAEC, NECO), comprehensive study materials, student dashboard, and admin portal."
+    />
+    <meta property="og:title" content="EduPulse Nigeria" />
+    <meta
+      property="og:description"
+      content="Empowering the next generation of scholars with realistic CBT practice (JAMB, WAEC, NECO), comprehensive study materials, student dashboard, and admin portal."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,300..800;1,300..800&family=Work+Sans:ital,wght@0,100..900;1,100..900&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class="bg-zinc-950 text-zinc-100 antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

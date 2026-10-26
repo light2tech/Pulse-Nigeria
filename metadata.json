@@ -1,0 +1,6 @@
+{
+  "name": "EduPulse Nigeria",
+  "description": "Empowering the next generation of scholars with realistic CBT practice (JAMB, WAEC, NECO), comprehensive study materials, student dashboard, and admin portal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
