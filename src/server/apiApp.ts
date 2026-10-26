@@ -33,6 +33,8 @@ export const SUPABASE_SECRET_KEY = resolveKey(
     process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
     process.env.SUPABASE_ANON_KEY ||
     process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISH_KEY ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 );
 
@@ -41,6 +43,8 @@ export const SUPABASE_PUBLIC_AUTH_KEY = resolveKey(
     process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
     process.env.SUPABASE_ANON_KEY ||
     process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISH_KEY ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
     process.env.SUPABASE_SECRET_KEY ||
     process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -2068,6 +2072,12 @@ export function createApiApp(options: ApiAppOptions = {}) {
   if (options.mountAtRoot || process.env.VERCEL) {
     app.use('/', router);
   }
+
+  app.use((req, res) => {
+    res.status(404).json({
+      error: `API endpoint not found: ${req.method} ${req.url}`,
+    });
+  });
 
   return app;
 }

@@ -32,6 +32,10 @@ const rawEnvKey =
 export const SUPABASE_URL = normalizeSupabaseUrl(rawEnvUrl);
 export const SUPABASE_PUBLISHABLE_KEY = normalizePublishableKey(rawEnvKey);
 
+export const isClientSupabaseConfigured =
+  SUPABASE_URL !== PLACEHOLDER_SUPABASE_URL &&
+  SUPABASE_PUBLISHABLE_KEY !== PLACEHOLDER_PUBLISHABLE_KEY;
+
 export const supabase = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: {
     persistSession: true,
