@@ -196,7 +196,7 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
   );
 
   const defaultModels = inferredBase.includes('groq.com')
-    ? ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']
+    ? ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b']
     : inferredBase.includes('x.ai')
       ? ['grok-3-mini', 'grok-2-latest']
       : inferredBase.includes('openrouter.ai')
@@ -374,6 +374,40 @@ function buildGeminiContents(messages: IncomingCopilotMessage[]) {
   }));
 }
 
+const discoveredProviderModelsCache = new Map<string, string[]>();
+
+async function resolveCandidateModels(cfg: OpenAiCompatibleConfig): Promise<string[]> {
+  const cached = discoveredProviderModelsCache.get(cfg.baseUrl);
+  if (cached && cached.length > 0) {
+    return [...cfg.models, ...cached.filter((m) => !cfg.models.includes(m))];
+  }
+  return [...cfg.models];
+}
+
+async function discoverChatModelsFromProvider(cfg: OpenAiCompatibleConfig): Promise<string[]> {
+  try {
+    const baseClean = cfg.baseUrl.replace(/\/chat\/completions$/, '');
+    const res = await fetch(`${baseClean}/models`, {
+      headers: { Authorization: `Bearer ${cfg.apiKey}` },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return [];
+    const json: any = await res.json();
+    const ids: string[] = Array.isArray(json?.data)
+      ? json.data.map((m: any) => String(m?.id || '').trim()).filter(Boolean)
+      : [];
+    const chatCapable = ids.filter(
+      (id) => !/guard|safeguard|whisper|orpheus|tts|embed|moderation|audio|vision-preview/i.test(id)
+    );
+    if (chatCapable.length > 0) {
+      discoveredProviderModelsCache.set(cfg.baseUrl, chatCapable);
+    }
+    return chatCapable;
+  } catch {
+    return [];
+  }
+}
+
 async function callOpenAiCompatibleUnary(
   cfg: OpenAiCompatibleConfig,
   systemInstruction: string,
@@ -383,8 +417,12 @@ async function callOpenAiCompatibleUnary(
     ? cfg.baseUrl
     : `${cfg.baseUrl}/chat/completions`;
 
+  const tryList = await resolveCandidateModels(cfg);
+  let attemptedDynamic = false;
   let lastErr: any;
-  for (const modelName of cfg.models) {
+
+  for (let i = 0; i < tryList.length; i++) {
+    const modelName = tryList[i];
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -415,12 +453,20 @@ async function callOpenAiCompatibleUnary(
       if (response.status === 401 || response.status === 403) {
         throw err;
       }
+      if (response.status === 404 && !attemptedDynamic && i === tryList.length - 1) {
+        attemptedDynamic = true;
+        const extra = await discoverChatModelsFromProvider(cfg);
+        for (const m of extra) {
+          if (!tryList.includes(m)) tryList.push(m);
+        }
+      }
       continue;
     }
 
     const data: any = await response.json();
-    const content = String(data?.choices?.[0]?.message?.content || '').trim();
-    if (content) return content;
+    const rawContent = String(data?.choices?.[0]?.message?.content || '');
+    const cleaned = rawContent.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    if (cleaned) return cleaned;
   }
 
   throw lastErr || new Error('Copilot provider returned an empty response.');
@@ -436,8 +482,12 @@ async function streamOpenAiCompatible(
     ? cfg.baseUrl
     : `${cfg.baseUrl}/chat/completions`;
 
+  const tryList = await resolveCandidateModels(cfg);
+  let attemptedDynamic = false;
   let lastErr: any;
-  for (const modelName of cfg.models) {
+
+  for (let i = 0; i < tryList.length; i++) {
+    const modelName = tryList[i];
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
@@ -468,6 +518,13 @@ async function streamOpenAiCompatible(
       lastErr = err;
       if (response.status === 401 || response.status === 403) {
         throw err;
+      }
+      if (response.status === 404 && !attemptedDynamic && i === tryList.length - 1) {
+        attemptedDynamic = true;
+        const extra = await discoverChatModelsFromProvider(cfg);
+        for (const m of extra) {
+          if (!tryList.includes(m)) tryList.push(m);
+        }
       }
       continue;
     }
