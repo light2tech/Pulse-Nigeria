@@ -42,7 +42,29 @@ function isGeminiFormattedKey(key: string): boolean {
 }
 
 function isOpenAiOrGroqKey(key: string): boolean {
-  return Boolean(key && (key.startsWith('gsk_') || key.startsWith('sk-')));
+  return Boolean(
+    key && (key.startsWith('gsk_') || key.startsWith('sk-') || key.startsWith('xai-'))
+  );
+}
+
+function scanEnvByValuePrefix(prefixes: string[]): string {
+  for (const [, rawVal] of Object.entries(process.env)) {
+    const val = getValidEnvValue(rawVal);
+    if (val && prefixes.some((p) => val.startsWith(p))) {
+      return val;
+    }
+  }
+  return '';
+}
+
+function getDetectedAiEnvVarNames(): string[] {
+  const names: string[] = [];
+  for (const [k] of Object.entries(process.env)) {
+    if (/(GROQ|GROK|XAI|GEMINI|COPILOT|OPENAI|DEEPSEEK|OPENROUTER|VERTEX)/i.test(k)) {
+      names.push(k);
+    }
+  }
+  return names;
 }
 
 function getGeminiApiKey(): string {
@@ -69,7 +91,7 @@ function getGeminiApiKey(): string {
     }
   }
 
-  return '';
+  return scanEnvByValuePrefix(['AIza', 'AQ.']);
 }
 
 interface OpenAiCompatibleConfig {
@@ -80,22 +102,37 @@ interface OpenAiCompatibleConfig {
 }
 
 function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
-  const groqKey = getValidEnvValue(
-    process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY
-  );
-  const openrouterKey = getValidEnvValue(
-    process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY
-  );
+  const groqKey =
+    getValidEnvValue(
+      process.env.GROQ_API_KEY ||
+        process.env.GROK_API_KEY ||
+        process.env.GROQ_KEY ||
+        process.env.GROK_KEY ||
+        process.env.VITE_GROQ_API_KEY ||
+        process.env.VITE_GROK_API_KEY ||
+        process.env.NEXT_PUBLIC_GROQ_API_KEY ||
+        process.env.NEXT_PUBLIC_GROK_API_KEY
+    ) || scanEnvByValuePrefix(['gsk_']);
+
+  const xaiKey =
+    getValidEnvValue(process.env.XAI_API_KEY || process.env.VITE_XAI_API_KEY) ||
+    scanEnvByValuePrefix(['xai-']);
+
+  const openrouterKey =
+    getValidEnvValue(
+      process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY
+    ) || scanEnvByValuePrefix(['sk-or-']);
+
   const deepseekKey = getValidEnvValue(
     process.env.DEEPSEEK_API_KEY || process.env.VITE_DEEPSEEK_API_KEY
   );
 
-  // Also detect if user pasted a gsk_... or sk-... key into COPILOT_API_KEY or GEMINI_API_KEY
   const misplacedInGemini = getValidEnvValue(
     process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY
   );
   const genericKey = getValidEnvValue(
     process.env.COPILOT_API_KEY ||
+      process.env.COPILOT_KEY ||
       process.env.VITE_COPILOT_API_KEY ||
       process.env.OPENAI_API_KEY ||
       process.env.VITE_OPENAI_API_KEY ||
@@ -104,7 +141,7 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
       (isOpenAiOrGroqKey(misplacedInGemini) ? misplacedInGemini : '')
   );
 
-  const apiKey = groqKey || genericKey || openrouterKey || deepseekKey;
+  const apiKey = groqKey || xaiKey || genericKey || openrouterKey || deepseekKey;
   if (!apiKey || isGeminiFormattedKey(apiKey)) {
     return null;
   }
@@ -112,18 +149,21 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
   const rawBase = getValidEnvValue(
     process.env.COPILOT_BASE_URL ||
       process.env.GROQ_BASE_URL ||
+      process.env.GROK_BASE_URL ||
       process.env.VITE_COPILOT_BASE_URL ||
       process.env.OPENAI_BASE_URL ||
       process.env.VITE_OPENAI_BASE_URL
   );
 
-  const isGroq = Boolean(groqKey || apiKey.startsWith('gsk_'));
-  const isOpenRouter = Boolean(!isGroq && (openrouterKey || apiKey.startsWith('sk-or-')));
-  const isDeepSeek = Boolean(!isGroq && !isOpenRouter && deepseekKey);
+  const isGroq = Boolean(apiKey.startsWith('gsk_') || (groqKey && !apiKey.startsWith('xai-') && !apiKey.startsWith('sk-')));
+  const isXai = Boolean(!isGroq && (xaiKey || apiKey.startsWith('xai-') || (!apiKey.startsWith('gsk_') && process.env.GROK_API_KEY && apiKey === getValidEnvValue(process.env.GROK_API_KEY))));
+  const isOpenRouter = Boolean(!isGroq && !isXai && (openrouterKey || apiKey.startsWith('sk-or-')));
+  const isDeepSeek = Boolean(!isGroq && !isXai && !isOpenRouter && deepseekKey);
 
   const hasExplicitProvider = Boolean(
     rawBase ||
       isGroq ||
+      isXai ||
       isOpenRouter ||
       isDeepSeek ||
       apiKey.startsWith('sk-proj-') ||
@@ -134,11 +174,13 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
     ? rawBase.replace(/\/+$/, '')
     : isGroq
       ? 'https://api.groq.com/openai/v1'
-      : isOpenRouter
-        ? 'https://openrouter.ai/api/v1'
-        : isDeepSeek
-          ? 'https://api.deepseek.com/v1'
-          : 'https://api.openai.com/v1';
+      : isXai
+        ? 'https://api.x.ai/v1'
+        : isOpenRouter
+          ? 'https://openrouter.ai/api/v1'
+          : isDeepSeek
+            ? 'https://api.deepseek.com/v1'
+            : 'https://api.openai.com/v1';
 
   if (failedOpenAiAuthCache.has(`${inferredBase}::${apiKey}`) && getGeminiApiKey()) {
     return null;
@@ -146,6 +188,7 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
 
   const rawModel = getValidEnvValue(
     process.env.GROQ_MODEL ||
+      process.env.GROK_MODEL ||
       process.env.COPILOT_MODEL ||
       process.env.VITE_COPILOT_MODEL ||
       process.env.OPENAI_MODEL ||
@@ -154,11 +197,13 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
 
   const defaultModels = inferredBase.includes('groq.com')
     ? ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']
-    : inferredBase.includes('openrouter.ai')
-      ? ['openai/gpt-4o-mini']
-      : inferredBase.includes('deepseek.com')
-        ? ['deepseek-chat']
-        : ['gpt-4o-mini'];
+    : inferredBase.includes('x.ai')
+      ? ['grok-3-mini', 'grok-2-latest']
+      : inferredBase.includes('openrouter.ai')
+        ? ['openai/gpt-4o-mini']
+        : inferredBase.includes('deepseek.com')
+          ? ['deepseek-chat']
+          : ['gpt-4o-mini'];
 
   const models = rawModel
     ? [rawModel, ...defaultModels.filter((m) => m !== rawModel)]
@@ -539,12 +584,19 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
   const status = Number(err?.status || err?.statusCode || 500);
 
   if (err?.code === 'API_KEY_MISSING') {
+    const seenVars = getDetectedAiEnvVarNames();
+    const envTarget = process.env.VERCEL_ENV || 'production';
+    const diagHint =
+      seenVars.length > 0
+        ? ` (Found empty/placeholder variable: ${seenVars.join(', ')})`
+        : ` (Vercel passed 0 AI variables into this "${envTarget}" deployment)`;
+
     return {
       status: 400,
       code: 'API_KEY_MISSING',
       message: process.env.VERCEL
-        ? 'Study Copilot has no AI key in this Vercel deployment yet. In Vercel → Settings → Environment Variables, add GEMINI_API_KEY (a free key starting with AIza... from aistudio.google.com/apikey), then go to Deployments → Redeploy.'
-        : 'No active AI key configured. Set GEMINI_API_KEY in Settings > Secrets.',
+        ? `Study Copilot has no AI key in this Vercel deployment yet${diagHint}. In Vercel → Project Settings → Environment Variables, set GROQ_API_KEY to your gsk_... key, make sure Production, Preview, and Development are all checked, click Save, and then click Deployments → ⋯ → Redeploy.`
+        : 'No active AI key configured. Set GROQ_API_KEY or GEMINI_API_KEY in .env.',
     };
   }
 
@@ -561,7 +613,7 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
       status: 400,
       code: 'CUSTOM_SK_KEY_NEEDS_BASE_URL',
       message:
-        'Your sk-... key was rejected by api.openai.com (401) because it comes from a third-party gateway rather than OpenAI directly. Either: (1) Replace it with GEMINI_API_KEY (a free AIza... key from aistudio.google.com/apikey) in Vercel Environment Variables, OR (2) Also add COPILOT_BASE_URL and COPILOT_MODEL from the provider where you generated that sk-... key, then Redeploy.',
+        'Your sk-... key was rejected by api.openai.com (401). Set GROQ_API_KEY to your gsk_... key in Vercel → Project Settings → Environment Variables, then click Deployments → Redeploy.',
     };
   }
 
@@ -573,8 +625,8 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
       status: status === 403 ? 403 : 400,
       code: 'API_KEY_ERROR',
       message: process.env.VERCEL
-        ? 'Study Copilot could not authenticate with the configured API key on Vercel. Verify GEMINI_API_KEY (or COPILOT_API_KEY + COPILOT_BASE_URL) in Vercel → Settings → Environment Variables without extra spaces, then Redeploy.'
-        : 'Study Copilot could not authenticate with the configured AI key. Check your key in Settings > Secrets.',
+        ? 'Study Copilot could not authenticate with the configured API key on Vercel. Verify GROQ_API_KEY (gsk_...) in Vercel → Project Settings → Environment Variables has no extra spaces, then Redeploy.'
+        : 'Study Copilot could not authenticate with the configured AI key.',
     };
   }
 
@@ -618,7 +670,9 @@ export function handleCopilotStatus(_req: Request, res: Response) {
     preferOpenAiFirst && openAiCfg
       ? openAiCfg.baseUrl.includes('groq.com')
         ? 'groq'
-        : 'openai-compatible'
+        : openAiCfg.baseUrl.includes('x.ai')
+          ? 'xai'
+          : 'openai-compatible'
       : geminiKey
         ? 'gemini'
         : openAiCfg
@@ -629,6 +683,8 @@ export function handleCopilotStatus(_req: Request, res: Response) {
     ok: true,
     configured: Boolean(geminiKey || openAiCfg),
     provider: activeProvider,
+    detectedAiVars: getDetectedAiEnvVarNames(),
+    vercelEnv: process.env.VERCEL_ENV || null,
     hasCustomBaseUrl,
     runtime: process.env.VERCEL ? 'vercel' : 'node',
   });
