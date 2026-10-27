@@ -1,16 +1,26 @@
 import { GoogleGenAI, GenerateContentResponse, ThinkingLevel } from '@google/genai';
 import type { Request, Response } from 'express';
 
-const GEMINI_FALLBACK_MODELS = [
+const DEFAULT_GEMINI_MODELS = [
   'gemini-3.1-flash-lite',
   'gemini-3.8-flash',
   'gemini-flash-latest',
 ] as const;
 
+const VERCEL_GEMINI_MODELS = [
+  'gemini-flash-latest',
+  'gemini-3.1-flash-lite',
+  'gemini-3.8-flash',
+] as const;
+
+function getGeminiModelCandidates(): readonly string[] {
+  return process.env.VERCEL ? VERCEL_GEMINI_MODELS : DEFAULT_GEMINI_MODELS;
+}
+
 const failedOpenAiAuthCache = new Set<string>();
 
 function getValidEnvValue(raw?: string): string {
-  const trimmed = (raw || '').trim();
+  const trimmed = (raw || '').trim().replace(/^["']+|["']+$/g, '');
   if (
     !trimmed ||
     trimmed === 'your_gemini_api_key' ||
@@ -27,7 +37,7 @@ function getGeminiApiKey(): string {
   if (copilotKey && (copilotKey.startsWith('AIza') || copilotKey.startsWith('AQ.'))) {
     return copilotKey;
   }
-  return getValidEnvValue(process.env.GEMINI_API_KEY);
+  return getValidEnvValue(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
 }
 
 function getOpenAiCompatibleConfig(): {
@@ -35,7 +45,12 @@ function getOpenAiCompatibleConfig(): {
   baseUrl: string;
   model: string;
 } | null {
-  const apiKey = getValidEnvValue(process.env.COPILOT_API_KEY || process.env.OPENAI_API_KEY);
+  const deepseekKey = getValidEnvValue(process.env.DEEPSEEK_API_KEY);
+  const openrouterKey = getValidEnvValue(process.env.OPENROUTER_API_KEY);
+  const groqKey = getValidEnvValue(process.env.GROQ_API_KEY);
+  const genericKey = getValidEnvValue(process.env.COPILOT_API_KEY || process.env.OPENAI_API_KEY);
+
+  const apiKey = genericKey || deepseekKey || openrouterKey || groqKey;
   if (!apiKey || apiKey.startsWith('AIza') || apiKey.startsWith('AQ.')) {
     return null;
   }
@@ -43,9 +58,13 @@ function getOpenAiCompatibleConfig(): {
   const rawBase = getValidEnvValue(process.env.COPILOT_BASE_URL || process.env.OPENAI_BASE_URL);
   const inferredBase = rawBase
     ? rawBase.replace(/\/+$/, '')
-    : apiKey.startsWith('sk-or-')
+    : openrouterKey || apiKey.startsWith('sk-or-')
       ? 'https://openrouter.ai/api/v1'
-      : 'https://api.openai.com/v1';
+      : groqKey || apiKey.startsWith('gsk_')
+        ? 'https://api.groq.com/openai/v1'
+        : deepseekKey
+          ? 'https://api.deepseek.com/v1'
+          : 'https://api.openai.com/v1';
 
   // If this exact (key, baseUrl) already returned 401 and Gemini is available, skip redundant 401 round-trips
   if (failedOpenAiAuthCache.has(`${inferredBase}::${apiKey}`) && getGeminiApiKey()) {
@@ -57,9 +76,11 @@ function getOpenAiCompatibleConfig(): {
     ? rawModel
     : inferredBase.includes('openrouter.ai')
       ? 'openai/gpt-4o-mini'
-      : inferredBase.includes('deepseek.com')
-        ? 'deepseek-chat'
-        : 'gpt-4o-mini';
+      : inferredBase.includes('groq.com')
+        ? 'llama-3.3-70b-versatile'
+        : inferredBase.includes('deepseek.com')
+          ? 'deepseek-chat'
+          : 'gpt-4o-mini';
 
   return {
     apiKey,
@@ -345,7 +366,7 @@ async function generateWithGeminiFallback(
 ): Promise<string> {
   let lastError: any;
 
-  for (const modelName of GEMINI_FALLBACK_MODELS) {
+  for (const modelName of getGeminiModelCandidates()) {
     try {
       const response: GenerateContentResponse = await ai.models.generateContent({
         model: modelName,
@@ -538,7 +559,7 @@ export async function handleCopilotStream(req: Request, res: Response) {
     const geminiContents = buildGeminiContents(sanitized);
     let lastError: any;
 
-    for (const modelName of GEMINI_FALLBACK_MODELS) {
+    for (const modelName of getGeminiModelCandidates()) {
       try {
         const responseStream = await ai.models.generateContentStream({
           model: modelName,
