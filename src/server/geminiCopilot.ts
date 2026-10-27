@@ -44,7 +44,9 @@ function isGeminiFormattedKey(key: string): boolean {
 function getGeminiApiKey(): string {
   const explicitGemini = getValidEnvValue(
     process.env.GEMINI_API_KEY ||
+      process.env.VERTEX_API_KEY ||
       process.env.GOOGLE_API_KEY ||
+      process.env.GOOGLE_CLOUD_API_KEY ||
       process.env.VITE_GEMINI_API_KEY ||
       process.env.VITE_GOOGLE_API_KEY ||
       process.env.NEXT_PUBLIC_GEMINI_API_KEY
@@ -151,15 +153,31 @@ function getOpenAiCompatibleConfig(): {
   };
 }
 
-function createGeminiClient(apiKey: string): GoogleGenAI {
+const resolvedVertexModeCache = new Map<string, boolean>();
+
+function createGeminiClient(apiKey: string, vertexai = false): GoogleGenAI {
   return new GoogleGenAI({
     apiKey,
+    ...(vertexai ? { vertexai: true } : {}),
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
       },
     },
   });
+}
+
+function getGeminiClientModes(apiKey: string): boolean[] {
+  if (resolvedVertexModeCache.has(apiKey)) {
+    const cached = resolvedVertexModeCache.get(apiKey)!;
+    return [cached, !cached];
+  }
+  // Keys starting with "AQ." are typically Vertex AI Express Mode keys (aiplatform.googleapis.com),
+  // though newer AI Studio keys can also use "AQ." — try vertexai: true first, then standard Gemini API.
+  if (apiKey.startsWith('AQ.')) {
+    return [true, false];
+  }
+  return [false];
 }
 
 export interface IncomingCopilotMessage {
@@ -421,29 +439,50 @@ function buildGeminiConfig(modelName: string, systemInstruction: string) {
   };
 }
 
-async function generateWithGeminiFallback(
-  ai: GoogleGenAI,
+function getModelsForMode(vertexai: boolean): string[] {
+  const base = getGeminiModelCandidates();
+  if (!vertexai) return base;
+  const vertexExtras = ['gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview'];
+  const combined = [...base];
+  for (const m of vertexExtras) {
+    if (!combined.includes(m)) combined.push(m);
+  }
+  return combined;
+}
+
+async function generateWithGeminiKeyFallback(
+  apiKey: string,
   contents: Array<{ role: string; parts: Array<{ text: string }> }>,
   systemInstruction: string
 ): Promise<string> {
   let lastError: any;
+  const modes = getGeminiClientModes(apiKey);
 
-  for (const modelName of getGeminiModelCandidates()) {
-    try {
-      const response: GenerateContentResponse = await ai.models.generateContent({
-        model: modelName,
-        contents,
-        config: buildGeminiConfig(modelName, systemInstruction),
-      });
-      const text = response.text?.trim();
-      if (text) return text;
-    } catch (err: any) {
-      lastError = err;
-      const status = Number(err?.status || err?.statusCode || 0);
-      // If API key itself is invalid/forbidden, fail immediately rather than trying other models
-      if (status === 400 || status === 403) {
-        if (/API_KEY_INVALID|PERMISSION_DENIED/i.test(String(err?.message || ''))) {
-          throw err;
+  for (const useVertex of modes) {
+    const ai = createGeminiClient(apiKey, useVertex);
+    for (const modelName of getModelsForMode(useVertex)) {
+      try {
+        const response: GenerateContentResponse = await ai.models.generateContent({
+          model: modelName,
+          contents,
+          config: buildGeminiConfig(modelName, systemInstruction),
+        });
+        const text = response.text?.trim();
+        if (text) {
+          resolvedVertexModeCache.set(apiKey, useVertex);
+          return text;
+        }
+      } catch (err: any) {
+        lastError = err;
+        const status = Number(err?.status || err?.statusCode || 0);
+        // If this endpoint rejected the key format/auth, break inner model loop to try the alternate mode
+        if (
+          (status === 400 || status === 401 || status === 403) &&
+          /API_KEY_INVALID|PERMISSION_DENIED|UNAUTHENTICATED|API keys are not supported/i.test(
+            String(err?.message || '')
+          )
+        ) {
+          break;
         }
       }
     }
@@ -581,9 +620,8 @@ export async function handleCopilotChat(req: Request, res: Response) {
 
     if (geminiKey) {
       try {
-        const ai = createGeminiClient(geminiKey);
-        const reply = await generateWithGeminiFallback(
-          ai,
+        const reply = await generateWithGeminiKeyFallback(
+          geminiKey,
           buildGeminiContents(sanitized),
           systemInstruction
         );
@@ -678,47 +716,52 @@ export async function handleCopilotStream(req: Request, res: Response) {
       throw err;
     }
 
-    const ai = createGeminiClient(geminiKey);
     const geminiContents = buildGeminiContents(sanitized);
     let lastError: any;
 
-    for (const modelName of getGeminiModelCandidates()) {
-      try {
-        const responseStream = await ai.models.generateContentStream({
-          model: modelName,
-          contents: geminiContents,
-          config: buildGeminiConfig(modelName, systemInstruction),
-        });
+    for (const useVertex of getGeminiClientModes(geminiKey)) {
+      const ai = createGeminiClient(geminiKey, useVertex);
+      for (const modelName of getModelsForMode(useVertex)) {
+        try {
+          const responseStream = await ai.models.generateContentStream({
+            model: modelName,
+            contents: geminiContents,
+            config: buildGeminiConfig(modelName, systemInstruction),
+          });
 
-        let streamedAny = false;
-        for await (const chunk of responseStream) {
-          const c = chunk as GenerateContentResponse;
-          const text = c.text;
-          if (text) {
-            if (!streamedAny) {
-              startSseHeaders();
-              streamedAny = true;
+          let streamedAny = false;
+          for await (const chunk of responseStream) {
+            const c = chunk as GenerateContentResponse;
+            const text = c.text;
+            if (text) {
+              if (!streamedAny) {
+                startSseHeaders();
+                streamedAny = true;
+              }
+              res.write(`data: ${JSON.stringify({ text })}\n\n`);
             }
-            res.write(`data: ${JSON.stringify({ text })}\n\n`);
           }
-        }
 
-        if (streamedAny) {
-          res.write('data: [DONE]\n\n');
-          res.end();
-          return;
-        }
-      } catch (err: any) {
-        lastError = err;
-        if (res.headersSent) {
-          throw err;
-        }
-        const status = Number(err?.status || err?.statusCode || 0);
-        if (
-          (status === 400 || status === 403) &&
-          /API_KEY_INVALID|PERMISSION_DENIED/i.test(String(err?.message || ''))
-        ) {
-          throw err;
+          if (streamedAny) {
+            resolvedVertexModeCache.set(geminiKey, useVertex);
+            res.write('data: [DONE]\n\n');
+            res.end();
+            return;
+          }
+        } catch (err: any) {
+          lastError = err;
+          if (res.headersSent) {
+            throw err;
+          }
+          const status = Number(err?.status || err?.statusCode || 0);
+          if (
+            (status === 400 || status === 401 || status === 403) &&
+            /API_KEY_INVALID|PERMISSION_DENIED|UNAUTHENTICATED|API keys are not supported/i.test(
+              String(err?.message || '')
+            )
+          ) {
+            break;
+          }
         }
       }
     }
