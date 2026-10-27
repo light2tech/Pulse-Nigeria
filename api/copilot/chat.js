@@ -3,31 +3,42 @@ export const config = {
 };
 
 function cleanEnv(raw) {
-  const trimmed = String(raw || '').trim().replace(/^["']+|["']+$/g, '');
+  const trimmed = String(raw || '').trim().replace(/^["']+|["']+$/g, '').trim();
   if (!trimmed || trimmed.startsWith('your_')) return '';
   return trimmed;
 }
 
+function cleanApiKey(raw) {
+  const val = cleanEnv(raw)
+    .replace(/^Authorization\s*:\s*/i, '')
+    .replace(/^Bearer\s+/i, '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '');
+  if (!val || val.startsWith('your_')) return '';
+  return val;
+}
+
 function getOpenRouterKey() {
-  const misplaced = cleanEnv(process.env.GEMINI_API_KEY);
+  const misplaced = cleanApiKey(process.env.GEMINI_API_KEY);
   return (
-    cleanEnv(process.env.OPENROUTER_API_KEY) ||
-    cleanEnv(process.env.OPENROUTER_KEY) ||
-    cleanEnv(process.env.VITE_OPENROUTER_API_KEY) ||
-    cleanEnv(process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) ||
-    cleanEnv(process.env.COPILOT_API_KEY) ||
-    cleanEnv(process.env.VITE_COPILOT_API_KEY) ||
-    cleanEnv(process.env.OPENAI_API_KEY) ||
+    cleanApiKey(process.env.OPENROUTER_API_KEY) ||
+    cleanApiKey(process.env.OPENROUTER_KEY) ||
+    cleanApiKey(process.env.VITE_OPENROUTER_API_KEY) ||
+    cleanApiKey(process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) ||
+    cleanApiKey(process.env.COPILOT_API_KEY) ||
+    cleanApiKey(process.env.VITE_COPILOT_API_KEY) ||
+    cleanApiKey(process.env.OPENAI_API_KEY) ||
     (misplaced.startsWith('sk-') ? misplaced : '')
   );
 }
 
 function getCandidateModels() {
-  const custom =
-    cleanEnv(process.env.OPENROUTER_MODEL) ||
-    cleanEnv(process.env.COPILOT_MODEL);
+  const custom = cleanEnv(process.env.OPENROUTER_MODEL);
   const defaults = ['openai/gpt-4o-mini', 'openai/gpt-4o'];
-  return custom ? [custom, ...defaults.filter((m) => m !== custom)] : defaults;
+  if (!custom || custom === 'openai/gpt-4o') {
+    return defaults;
+  }
+  return [custom, ...defaults.filter((m) => m !== custom)];
 }
 
 function buildSystemInstruction(context, student) {
@@ -127,9 +138,10 @@ export default async function handler(req) {
 
   const systemInstruction = buildSystemInstruction(body?.context, body?.student);
   const origin = req.headers.get('origin') || 'https://edupulse.app';
+  const isOpenRouterKey = apiKey.startsWith('sk-or-');
   const baseUrl = (
     cleanEnv(process.env.OPENROUTER_BASE_URL) ||
-    cleanEnv(process.env.COPILOT_BASE_URL) ||
+    (isOpenRouterKey ? 'https://openrouter.ai/api/v1' : cleanEnv(process.env.COPILOT_BASE_URL)) ||
     'https://openrouter.ai/api/v1'
   ).replace(/\/+$/, '');
   const endpoint = baseUrl.endsWith('/chat/completions')

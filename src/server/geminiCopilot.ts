@@ -25,7 +25,7 @@ function getGeminiModelCandidates(): string[] {
 const failedOpenAiAuthCache = new Set<string>();
 
 function getValidEnvValue(raw?: string): string {
-  const trimmed = (raw || '').trim().replace(/^["']+|["']+$/g, '');
+  const trimmed = (raw || '').trim().replace(/^["']+|["']+$/g, '').trim();
   if (
     !trimmed ||
     trimmed === 'your_gemini_api_key' ||
@@ -35,6 +35,16 @@ function getValidEnvValue(raw?: string): string {
     return '';
   }
   return trimmed;
+}
+
+function getValidApiKey(raw?: string): string {
+  const val = getValidEnvValue(raw)
+    .replace(/^Authorization\s*:\s*/i, '')
+    .replace(/^Bearer\s+/i, '')
+    .trim()
+    .replace(/^["']+|["']+$/g, '');
+  if (!val || val.startsWith('your_')) return '';
+  return val;
 }
 
 function isGeminiFormattedKey(key: string): boolean {
@@ -47,7 +57,7 @@ function isOpenAiOrOpenRouterKey(key: string): boolean {
 
 function scanEnvByValuePrefix(prefixes: string[]): string {
   for (const [, rawVal] of Object.entries(process.env)) {
-    const val = getValidEnvValue(rawVal);
+    const val = getValidApiKey(rawVal);
     if (val && prefixes.some((p) => val.startsWith(p))) {
       return val;
     }
@@ -81,7 +91,7 @@ function getGeminiApiKey(): string {
   ];
 
   for (const raw of candidates) {
-    const val = getValidEnvValue(raw);
+    const val = getValidApiKey(raw);
     if (val && !isOpenAiOrOpenRouterKey(val)) {
       if (isGeminiFormattedKey(val) || raw === process.env.GEMINI_API_KEY) {
         return val;
@@ -126,21 +136,21 @@ function buildOpenAiCompatibleHeaders(cfg: OpenAiCompatibleConfig): Record<strin
 
 function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
   const openrouterKey =
-    getValidEnvValue(
+    getValidApiKey(
       process.env.OPENROUTER_API_KEY ||
         process.env.OPENROUTER_KEY ||
         process.env.VITE_OPENROUTER_API_KEY ||
         process.env.NEXT_PUBLIC_OPENROUTER_API_KEY
     ) || scanEnvByValuePrefix(['sk-or-']);
 
-  const deepseekKey = getValidEnvValue(
+  const deepseekKey = getValidApiKey(
     process.env.DEEPSEEK_API_KEY || process.env.VITE_DEEPSEEK_API_KEY
   );
 
-  const misplacedInGemini = getValidEnvValue(
+  const misplacedInGemini = getValidApiKey(
     process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY
   );
-  const genericKey = getValidEnvValue(
+  const genericKey = getValidApiKey(
     process.env.COPILOT_API_KEY ||
       process.env.COPILOT_KEY ||
       process.env.VITE_COPILOT_API_KEY ||
@@ -156,17 +166,17 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
     return null;
   }
 
+  const isOpenRouter = Boolean(openrouterKey || apiKey.startsWith('sk-or-'));
   const rawBase = getValidEnvValue(
-    process.env.OPENROUTER_BASE_URL ||
-      process.env.COPILOT_BASE_URL ||
-      process.env.VITE_COPILOT_BASE_URL ||
-      process.env.OPENAI_BASE_URL ||
-      process.env.VITE_OPENAI_BASE_URL
+    isOpenRouter
+      ? process.env.OPENROUTER_BASE_URL
+      : process.env.OPENROUTER_BASE_URL ||
+          process.env.COPILOT_BASE_URL ||
+          process.env.VITE_COPILOT_BASE_URL ||
+          process.env.OPENAI_BASE_URL ||
+          process.env.VITE_OPENAI_BASE_URL
   );
 
-  const isOpenRouter = Boolean(
-    openrouterKey || apiKey.startsWith('sk-or-') || rawBase.includes('openrouter.ai')
-  );
   const isDeepSeek = Boolean(!isOpenRouter && deepseekKey);
 
   const hasExplicitProvider = Boolean(
@@ -190,11 +200,13 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
   }
 
   const rawModel = getValidEnvValue(
-    process.env.OPENROUTER_MODEL ||
-      process.env.COPILOT_MODEL ||
-      process.env.VITE_COPILOT_MODEL ||
-      process.env.OPENAI_MODEL ||
-      process.env.VITE_OPENAI_MODEL
+    isOpenRouter
+      ? process.env.OPENROUTER_MODEL
+      : process.env.OPENROUTER_MODEL ||
+          process.env.COPILOT_MODEL ||
+          process.env.VITE_COPILOT_MODEL ||
+          process.env.OPENAI_MODEL ||
+          process.env.VITE_OPENAI_MODEL
   );
 
   const defaultModels = inferredBase.includes('openrouter.ai')
@@ -203,9 +215,10 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
       ? ['deepseek-chat']
       : ['gpt-4o-mini'];
 
-  const models = rawModel
-    ? [rawModel, ...defaultModels.filter((m) => m !== rawModel)]
-    : defaultModels;
+  const models =
+    rawModel && !(isOpenRouter && rawModel === 'openai/gpt-4o')
+      ? [rawModel, ...defaultModels.filter((m) => m !== rawModel)]
+      : defaultModels;
 
   return {
     apiKey,
@@ -768,7 +781,7 @@ export async function handleCopilotChat(req: Request, res: Response) {
           return;
         }
       } catch (openAiErr) {
-        if (!geminiKey) {
+        if (!geminiKey || openAiCfg.isOpenRouter) {
           throw openAiErr;
         }
       }
@@ -859,7 +872,7 @@ export async function handleCopilotStream(req: Request, res: Response) {
           return;
         }
       } catch (openAiErr) {
-        if (!geminiKey || res.headersSent) {
+        if (!geminiKey || openAiCfg.isOpenRouter || res.headersSent) {
           throw openAiErr;
         }
       }
