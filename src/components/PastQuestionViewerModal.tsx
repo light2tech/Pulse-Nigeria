@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { PastQuestionPaper, UserProfile, CbtLaunchConfig } from '../types';
+import { PastQuestionPaper, UserProfile, CbtLaunchConfig, CopilotLaunchRequest } from '../types';
 import { usePlatform } from '../lib/realtimeStore';
 import { BookmarkButton } from './BookmarkButton';
 
@@ -10,6 +10,7 @@ interface PastQuestionViewerModalProps {
   onLaunchSubjectCbt: (config: CbtLaunchConfig) => void;
   isSaved: boolean;
   onToggleBookmark: () => void;
+  onAskCopilot?: (request: CopilotLaunchRequest) => void;
 }
 
 export const PastQuestionViewerModal: React.FC<PastQuestionViewerModalProps> = ({
@@ -19,6 +20,7 @@ export const PastQuestionViewerModal: React.FC<PastQuestionViewerModalProps> = (
   onLaunchSubjectCbt,
   isSaved,
   onToggleBookmark,
+  onAskCopilot,
 }) => {
   const { recordMaterialRead } = usePlatform();
   const [revealAllAnswers, setRevealAllAnswers] = useState(false);
@@ -252,7 +254,7 @@ export const PastQuestionViewerModal: React.FC<PastQuestionViewerModalProps> = (
                       </div>
                     )}
 
-                    <div className="pl-0 sm:pl-11 pt-1 flex items-center justify-between">
+                    <div className="pl-0 sm:pl-11 pt-1 flex flex-wrap items-center justify-between gap-2.5">
                       <button
                         type="button"
                         onClick={() => toggleRevealItem(item.id)}
@@ -265,6 +267,37 @@ export const PastQuestionViewerModal: React.FC<PastQuestionViewerModalProps> = (
                           {isRevealed ? 'Hide Answer & Scheme' : 'Reveal Official Answer & Marking Scheme'}
                         </span>
                       </button>
+
+                      {onAskCopilot && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const pickedText =
+                              userSelected !== undefined && item.options?.[userSelected]
+                                ? `${String.fromCharCode(65 + userSelected)}. ${item.options[userSelected]}`
+                                : undefined;
+                            onAskCopilot({
+                              context: {
+                                type: 'question',
+                                subject: paper.subject,
+                                questionSource: `${paper.examBody} ${paper.examYear} Q${item.questionNumber || idx + 1}`,
+                                questionText: item.question,
+                                options: item.options,
+                                correctAnswer: item.answer,
+                                studentAnswer: pickedText,
+                                officialExplanation: item.explanation,
+                              },
+                              autoPrompt: `Explain step-by-step how to solve Question ${item.questionNumber || idx + 1} (${paper.examBody} ${paper.examYear} ${paper.subject}), why the official answer is correct, and why the other options are wrong.`,
+                            });
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 text-xs font-medium text-zinc-200 hover:text-emerald-300 flex items-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <span className="material-symbols-outlined text-sm text-emerald-400">
+                            auto_awesome
+                          </span>
+                          <span>Ask Copilot to Explain</span>
+                        </button>
+                      )}
                     </div>
 
                     {isRevealed && (

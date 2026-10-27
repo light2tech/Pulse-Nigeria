@@ -7,6 +7,7 @@ import {
   CbtLaunchConfig,
   SavedResourceItem,
   SavedResourceType,
+  CopilotLaunchRequest,
 } from './types';
 import { Navbar } from './components/Navbar';
 import { LandingView } from './components/LandingView';
@@ -16,6 +17,7 @@ import { AdminPortalView } from './components/AdminPortalView';
 import { AuthView } from './components/AuthView';
 import { MaterialReaderModal } from './components/MaterialReaderModal';
 import { PastQuestionViewerModal } from './components/PastQuestionViewerModal';
+import { StudyCopilotDrawer } from './components/StudyCopilotDrawer';
 import { getActiveSessionUser, saveUserProfile, clearActiveSession } from './lib/userStore';
 import { supabase } from './lib/supabase';
 import { syncAuthenticatedProfile, toggleResourceBookmarkOnServer } from './lib/supabaseService';
@@ -32,7 +34,18 @@ function AppShell() {
   const [cbtLaunchConfig, setCbtLaunchConfig] = useState<CbtLaunchConfig>({
     mode: 'standard',
   });
+  const [copilotDrawerOpen, setCopilotDrawerOpen] = useState(false);
+  const [copilotLaunchRequest, setCopilotLaunchRequest] = useState<CopilotLaunchRequest | null>(
+    null
+  );
   const pendingBookmarkMutationsRef = useRef<number>(0);
+
+  const handleOpenCopilotWithRequest = useCallback((request?: CopilotLaunchRequest) => {
+    if (request) {
+      setCopilotLaunchRequest(request);
+    }
+    setCopilotDrawerOpen(true);
+  }, []);
 
   const setCurrentUser = useCallback((user: UserProfile | null) => {
     if (!user) {
@@ -94,6 +107,7 @@ function AppShell() {
   }, [currentView, currentUser, reportPresence]);
 
   const handleLaunchCbt = (config: CbtLaunchConfig) => {
+    setCopilotDrawerOpen(false);
     setCbtLaunchConfig(config);
     setCurrentView('cbt');
   };
@@ -220,6 +234,7 @@ function AppShell() {
             currentUser={currentUser}
             launchConfig={cbtLaunchConfig}
             setLaunchConfig={setCbtLaunchConfig}
+            onAskCopilot={handleOpenCopilotWithRequest}
           />
         )}
 
@@ -287,6 +302,7 @@ function AppShell() {
           setCurrentView={setCurrentView}
           isSaved={isResourceSaved(selectedMaterial.id, 'material')}
           onToggleBookmark={() => handleToggleBookmark(selectedMaterial.id, 'material')}
+          onAskCopilot={handleOpenCopilotWithRequest}
         />
       )}
 
@@ -298,8 +314,32 @@ function AppShell() {
           onLaunchSubjectCbt={handleLaunchCbt}
           isSaved={isResourceSaved(selectedPastQuestion.id, 'past_question')}
           onToggleBookmark={() => handleToggleBookmark(selectedPastQuestion.id, 'past_question')}
+          onAskCopilot={handleOpenCopilotWithRequest}
         />
       )}
+
+      {currentView !== 'cbt' &&
+        currentView !== 'login' &&
+        currentView !== 'register' &&
+        !copilotDrawerOpen && (
+          <button
+            type="button"
+            onClick={() => handleOpenCopilotWithRequest()}
+            className="fixed bottom-5 right-5 z-40 px-4 py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold text-xs shadow-xl border border-emerald-400/50 flex items-center gap-2 transition-colors cursor-pointer"
+            aria-label="Open EduPulse Study Copilot"
+          >
+            <span className="material-symbols-outlined text-base">auto_awesome</span>
+            <span>Study Copilot</span>
+          </button>
+        )}
+
+      <StudyCopilotDrawer
+        isOpen={copilotDrawerOpen}
+        onClose={() => setCopilotDrawerOpen(false)}
+        currentUser={currentUser}
+        launchRequest={copilotLaunchRequest}
+        onConsumeLaunchRequest={() => setCopilotLaunchRequest(null)}
+      />
     </div>
   );
 }

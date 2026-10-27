@@ -6,12 +6,14 @@ import {
   PastQuestionPaper,
   CbtLaunchConfig,
   SavedResourceType,
+  CopilotLaunchRequest,
 } from '../types';
 import { usePlatform } from '../lib/realtimeStore';
 import { updateProfileOnServer, uploadProfileAvatarToSupabase } from '../lib/supabaseService';
 import { getMaterialCoverImage } from '../data/mockData';
 import { EXAM_BODIES } from '../lib/subjectCatalog';
 import { BookmarkButton } from './BookmarkButton';
+import { StudyCopilotPanel } from './StudyCopilotPanel';
 
 interface StudentDashboardViewProps {
   currentUser: UserProfile;
@@ -57,8 +59,11 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
 }) => {
   const { snapshot, refreshSnapshot } = usePlatform();
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'saved' | 'past_questions' | 'library' | 'history' | 'profile'
+    'overview' | 'copilot' | 'saved' | 'past_questions' | 'library' | 'history' | 'profile'
   >('overview');
+  const [internalCopilotLaunch, setInternalCopilotLaunch] = useState<CopilotLaunchRequest | null>(
+    null
+  );
 
   const [searchMaterial, setSearchMaterial] = useState('');
   const [subjectFilter, setSubjectFilter] = useState('All');
@@ -414,6 +419,20 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
             </button>
 
             <button
+              onClick={() => setActiveTab('copilot')}
+              className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                activeTab === 'copilot'
+                  ? 'bg-zinc-800 text-white font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900'
+              }`}
+            >
+              <span className="material-symbols-outlined text-lg text-emerald-400">
+                auto_awesome
+              </span>
+              <span>Study Copilot</span>
+            </button>
+
+            <button
               onClick={() => setActiveTab('saved')}
               className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-lg font-medium whitespace-nowrap transition-colors cursor-pointer ${
                 activeTab === 'saved'
@@ -502,21 +521,25 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
                   ? 'Past Questions & Answers'
                   : activeTab === 'saved'
                     ? 'Saved Resources'
-                    : activeTab}
+                    : activeTab === 'copilot'
+                      ? 'Study Copilot'
+                      : activeTab}
               </span>
             </div>
             <h1 className="font-headline text-2xl font-bold text-white">
               {activeTab === 'overview'
                 ? `Welcome back, ${currentUser.name.split(' ')[0]}`
-                : activeTab === 'saved'
-                  ? 'Saved Study Materials & Past Questions'
-                  : activeTab === 'past_questions'
-                    ? 'Past Questions & Official Answers Archive'
-                    : activeTab === 'library'
-                      ? 'Curriculum Reading Materials'
-                      : activeTab === 'history'
-                        ? 'Personal Examination Log'
-                        : 'Account & Profile Preferences'}
+                : activeTab === 'copilot'
+                  ? 'Study Copilot — Questions & Note Explanations'
+                  : activeTab === 'saved'
+                    ? 'Saved Study Materials & Past Questions'
+                    : activeTab === 'past_questions'
+                      ? 'Past Questions & Official Answers Archive'
+                      : activeTab === 'library'
+                        ? 'Curriculum Reading Materials'
+                        : activeTab === 'history'
+                          ? 'Personal Examination Log'
+                          : 'Account & Profile Preferences'}
             </h1>
           </div>
 
@@ -1378,7 +1401,37 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
                         onClick={() => onOpenMaterial(mat)}
                         className="flex-1 py-2 px-3 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-200 cursor-pointer whitespace-nowrap"
                       >
-                        Open Reading Material
+                        Read Note
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const pages =
+                            mat.content && mat.content.length > 0
+                              ? mat.content
+                              : [mat.summary || 'Study module notes.'];
+                          setInternalCopilotLaunch({
+                            context: {
+                              type: 'material',
+                              subject: mat.subject,
+                              materialId: mat.id,
+                              materialTitle: mat.title,
+                              materialLevel: mat.level,
+                              materialSummary: mat.summary,
+                              sectionIndex: 0,
+                              totalSections: pages.length,
+                              currentSectionContent: pages[0],
+                              fullNoteContent: pages,
+                            },
+                            autoPrompt: `Explain the study note "${mat.title}" (${mat.subject}) step-by-step in simple language with examples and key JAMB/WAEC exam points.`,
+                          });
+                          setActiveTab('copilot');
+                        }}
+                        className="py-2 px-2.5 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/35 rounded-lg text-xs font-medium text-emerald-300 flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                        title="Explain this note with Study Copilot"
+                      >
+                        <span className="material-symbols-outlined text-sm">auto_awesome</span>
+                        <span>Explain</span>
                       </button>
                       <BookmarkButton
                         isSaved={isResourceSaved(mat.id, 'material')}
@@ -1390,6 +1443,15 @@ export const StudentDashboardView: React.FC<StudentDashboardViewProps> = ({
               </div>
             )}
           </div>
+        )}
+
+        {activeTab === 'copilot' && (
+          <StudyCopilotPanel
+            currentUser={currentUser}
+            weakestSubject={analytics.weakestSubject}
+            launchRequest={internalCopilotLaunch}
+            onConsumeLaunchRequest={() => setInternalCopilotLaunch(null)}
+          />
         )}
 
         {activeTab === 'history' && (

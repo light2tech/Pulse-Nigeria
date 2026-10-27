@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StudyMaterial, AppView, UserProfile, CbtLaunchConfig } from '../types';
+import { StudyMaterial, AppView, UserProfile, CbtLaunchConfig, CopilotLaunchRequest } from '../types';
 import { usePlatform } from '../lib/realtimeStore';
 import { BookmarkButton } from './BookmarkButton';
 
@@ -11,6 +11,7 @@ interface MaterialReaderModalProps {
   setCurrentView: (view: AppView) => void;
   isSaved: boolean;
   onToggleBookmark: () => void;
+  onAskCopilot?: (request: CopilotLaunchRequest) => void;
 }
 
 export const MaterialReaderModal: React.FC<MaterialReaderModalProps> = ({
@@ -20,6 +21,7 @@ export const MaterialReaderModal: React.FC<MaterialReaderModalProps> = ({
   onLaunchSubjectCbt,
   isSaved,
   onToggleBookmark,
+  onAskCopilot,
 }) => {
   const [currentPage, setCurrentPage] = useState(0);
   const [viewMode, setViewMode] = useState<'notes' | 'attachment'>('notes');
@@ -180,6 +182,72 @@ export const MaterialReaderModal: React.FC<MaterialReaderModalProps> = ({
             </div>
           ) : (
             <>
+              {onAskCopilot && (
+                <div className="p-3.5 rounded-xl bg-zinc-950 border border-emerald-500/25 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 text-xs">
+                    <span className="material-symbols-outlined text-emerald-400 text-base">
+                      auto_awesome
+                    </span>
+                    <span className="text-zinc-300">
+                      Need help understanding this chapter? Ask{' '}
+                      <strong className="text-white font-semibold">Study Copilot</strong> to break it down.
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onAskCopilot({
+                          context: {
+                            type: 'material',
+                            subject: material.subject,
+                            materialId: material.id,
+                            materialTitle: material.title,
+                            materialLevel: material.level,
+                            materialSummary: material.summary,
+                            sectionIndex: currentPage,
+                            totalSections: pages.length,
+                            currentSectionContent: pages[currentPage],
+                            fullNoteContent: pages,
+                          },
+                          autoPrompt: `Explain Section ${currentPage + 1} of "${material.title}" clearly step-by-step with simple examples and key JAMB/WAEC takeaways.`,
+                        })
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/40 text-emerald-300 font-semibold text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-sm">psychology</span>
+                      <span>Explain This Section</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onAskCopilot({
+                          context: {
+                            type: 'material',
+                            subject: material.subject,
+                            materialId: material.id,
+                            materialTitle: material.title,
+                            materialLevel: material.level,
+                            materialSummary: material.summary,
+                            sectionIndex: currentPage,
+                            totalSections: pages.length,
+                            currentSectionContent: pages[currentPage],
+                            fullNoteContent: pages,
+                          },
+                          autoPrompt: `Summarize "${material.title}" into high-yield revision bullet points and test me with 3 JAMB standard practice questions.`,
+                        })
+                      }
+                      className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-200 font-medium text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <span className="material-symbols-outlined text-sm text-emerald-400">quiz</span>
+                      <span>Summarize &amp; Quiz Me</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <article className="bg-zinc-950 p-6 rounded-xl border border-zinc-800/90 text-sm text-zinc-200 leading-relaxed whitespace-pre-line">
                 {pages[currentPage]}
               </article>

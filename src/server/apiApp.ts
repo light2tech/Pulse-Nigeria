@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { seedJambSyllabusAndPastQuestions } from './jambSyllabusSeed';
+import { handleCopilotChat, handleCopilotStream } from './geminiCopilot';
 
 export const PLACEHOLDER_SUPABASE_URL = 'https://placeholder.supabase.co';
 export const PLACEHOLDER_SECRET_KEY = 'placeholder-server-key-configure-env';
@@ -2068,16 +2069,25 @@ export function createApiApp(options: ApiAppOptions = {}) {
     }
   });
 
-  app.use('/api', router);
-  if (options.mountAtRoot || process.env.VERCEL) {
-    app.use('/', router);
-  }
+  // Server-side Gemini Study Copilot endpoints (answering student questions & explaining study notes)
+  router.post('/copilot/chat', handleCopilotChat);
+  router.post('/copilot/stream', handleCopilotStream);
 
-  app.use((req, res) => {
+  app.use('/api', router);
+  app.use('/api', (req, res) => {
     res.status(404).json({
-      error: `API endpoint not found: ${req.method} ${req.url}`,
+      error: `API endpoint not found: ${req.method} ${req.originalUrl || req.url}`,
     });
   });
+
+  if (options.mountAtRoot || process.env.VERCEL) {
+    app.use('/', router);
+    app.use((req, res) => {
+      res.status(404).json({
+        error: `API endpoint not found: ${req.method} ${req.originalUrl || req.url}`,
+      });
+    });
+  }
 
   return app;
 }

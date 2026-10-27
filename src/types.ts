@@ -185,3 +185,40 @@ export interface CbtLaunchConfig {
   subject?: string;
   durationMinutes?: number;
 }
+
+export type CopilotContextType = 'general' | 'material' | 'question';
+
+export interface CopilotContextPayload {
+  type: CopilotContextType;
+  subject?: string;
+  // Study Material / Note context
+  materialId?: string;
+  materialTitle?: string;
+  materialLevel?: string;
+  materialSummary?: string;
+  sectionIndex?: number;
+  totalSections?: number;
+  currentSectionContent?: string;
+  fullNoteContent?: string[];
+  // Past Question or Post-Exam Review Question context
+  questionSource?: string;
+  questionText?: string;
+  options?: string[];
+  correctAnswer?: string;
+  studentAnswer?: string;
+  officialExplanation?: string;
+}
+
+export interface CopilotMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+  contextLabel?: string;
+}
+
+export interface CopilotLaunchRequest {
+  context: CopilotContextPayload;
+  autoPrompt?: string;
+}
+

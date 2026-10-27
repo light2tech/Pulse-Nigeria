@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { CbtQuestion, ExamResult, AppView, UserProfile, CbtLaunchConfig } from '../types';
+import {
+  CbtQuestion,
+  ExamResult,
+  AppView,
+  UserProfile,
+  CbtLaunchConfig,
+  CopilotLaunchRequest,
+} from '../types';
 import { usePlatform } from '../lib/realtimeStore';
 
 interface CbtExamViewProps {
@@ -7,6 +14,7 @@ interface CbtExamViewProps {
   currentUser: UserProfile | null;
   launchConfig: CbtLaunchConfig;
   setLaunchConfig: (config: CbtLaunchConfig) => void;
+  onAskCopilot?: (request: CopilotLaunchRequest) => void;
 }
 
 const SUBJECT_DURATION_SECONDS = 40 * 60; // 40 minutes per subject
@@ -16,6 +24,7 @@ export const CbtExamView: React.FC<CbtExamViewProps> = ({
   currentUser,
   launchConfig,
   setLaunchConfig,
+  onAskCopilot,
 }) => {
   const { snapshot, isLoading, reportPresence, recordExamSubmission } = usePlatform();
 
@@ -807,21 +816,50 @@ export const CbtExamView: React.FC<CbtExamViewProps> = ({
                 const isCorrect = choice === q.correctOptionIndex;
                 return (
                   <div key={q.id} className="p-4 bg-zinc-950 rounded-xl border border-zinc-800 text-xs">
-                    <div className="flex justify-between items-center gap-2 mb-1.5">
+                    <div className="flex flex-wrap justify-between items-center gap-2 mb-1.5">
                       <span className="text-zinc-400 tabular-nums">
                         Item {idx + 1} · {q.subject} · {q.topic}
                       </span>
-                      <span
-                        className={`font-semibold ${
-                          choice === undefined
-                            ? 'text-zinc-500'
-                            : isCorrect
-                              ? 'text-emerald-400'
-                              : 'text-red-400'
-                        }`}
-                      >
-                        {choice === undefined ? 'Skipped' : isCorrect ? '✓ Correct' : '✗ Incorrect'}
-                      </span>
+                      <div className="flex items-center gap-2.5">
+                        <span
+                          className={`font-semibold ${
+                            choice === undefined
+                              ? 'text-zinc-500'
+                              : isCorrect
+                                ? 'text-emerald-400'
+                                : 'text-red-400'
+                          }`}
+                        >
+                          {choice === undefined ? 'Skipped' : isCorrect ? '✓ Correct' : '✗ Incorrect'}
+                        </span>
+                        {onAskCopilot && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onAskCopilot({
+                                context: {
+                                  type: 'question',
+                                  subject: q.subject,
+                                  questionSource: `CBT Review Item ${idx + 1} (${q.topic})`,
+                                  questionText: q.text,
+                                  options: q.options,
+                                  correctAnswer: `${String.fromCharCode(65 + q.correctOptionIndex)}. ${q.options[q.correctOptionIndex]}`,
+                                  studentAnswer:
+                                    choice !== undefined && q.options[choice]
+                                      ? `${String.fromCharCode(65 + choice)}. ${q.options[choice]}`
+                                      : 'Skipped (No answer selected)',
+                                  officialExplanation: q.explanation,
+                                },
+                                autoPrompt: `Explain this ${q.subject} question (${q.topic}) step-by-step, clarify why "${q.options[q.correctOptionIndex]}" is the right answer, and explain what I should watch out for next time.`,
+                              })
+                            }
+                            className="px-2.5 py-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 hover:border-emerald-500/40 text-[11px] font-medium text-emerald-300 flex items-center gap-1 transition-colors cursor-pointer"
+                          >
+                            <span className="material-symbols-outlined text-[13px]">auto_awesome</span>
+                            <span>Ask Copilot</span>
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <p className="text-zinc-200 font-medium mb-2">{q.text}</p>
                     <p className="text-emerald-400 mb-1">
