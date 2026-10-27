@@ -49,17 +49,28 @@ export async function sendCopilotMessage({
       });
 
       if (!res.ok) {
-        let errMsg = `Study Copilot request failed (${res.status})`;
+        let errMsg =
+          res.status === 504
+            ? 'OpenRouter request timed out (504). Please try a shorter prompt or retry.'
+            : `OpenRouter AI request failed (${res.status})`;
         let errCode = '';
         try {
           const errJson = await res.json();
           if (errJson?.error) errMsg = errJson.error;
           if (errJson?.code) errCode = String(errJson.code);
         } catch {
-          // ignore JSON parse failure
+          // ignore JSON parse failure on non-JSON gateway responses
         }
 
-        if (NON_RETRYABLE_CODES.has(errCode)) {
+        if (
+          NON_RETRYABLE_CODES.has(errCode) ||
+          res.status === 400 ||
+          res.status === 401 ||
+          res.status === 402 ||
+          res.status === 403 ||
+          res.status === 429 ||
+          res.status === 504
+        ) {
           const fatalErr = new Error(errMsg);
           (fatalErr as any).nonRetryable = true;
           throw fatalErr;
@@ -147,11 +158,11 @@ export async function sendCopilotMessage({
       ) {
         throw streamErr;
       }
-      // Automatically fall back to unary /api/copilot/chat on serverless stream/routing issues
+      // Automatically fall back to unary /api/copilot/chat on transient routing issues
     }
   }
 
-  // Unary JSON call (primary when no onToken, or automatic fallback on Vercel serverless)
+  // Unary JSON call (primary when no onToken, or fallback on non-streaming proxy)
   const fallbackRes = await fetch('/api/copilot/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -161,14 +172,20 @@ export async function sendCopilotMessage({
 
   const fallbackType = fallbackRes.headers.get('content-type') || '';
   if (fallbackType.includes('text/html')) {
+    if (fallbackRes.status === 504) {
+      throw new Error('OpenRouter request timed out on the server (504). Please try again.');
+    }
+    if (fallbackRes.status >= 500) {
+      throw new Error(`OpenRouter gateway error (${fallbackRes.status}). Please retry in a moment.`);
+    }
     throw new Error(
-      'Study Copilot API endpoint is not deployed on this Vercel build yet. Push your latest AI Studio changes to GitHub so Vercel builds the Copilot backend.'
+      `OpenRouter API route returned an unexpected HTML response (${fallbackRes.status}). Push your latest changes to GitHub so Vercel deploys the updated OpenRouter Edge routes.`
     );
   }
 
   const data = await fallbackRes.json().catch(() => ({}));
   if (!fallbackRes.ok || data?.error) {
-    throw new Error(data?.error || `Study Copilot request failed (${fallbackRes.status})`);
+    throw new Error(data?.error || `OpenRouter AI request failed (${fallbackRes.status})`);
   }
 
   const reply = String(data?.reply || '');

@@ -41,10 +41,8 @@ function isGeminiFormattedKey(key: string): boolean {
   return Boolean(key && (key.startsWith('AIza') || key.startsWith('AQ.')));
 }
 
-function isOpenAiOrGroqKey(key: string): boolean {
-  return Boolean(
-    key && (key.startsWith('gsk_') || key.startsWith('sk-') || key.startsWith('xai-'))
-  );
+function isOpenAiOrOpenRouterKey(key: string): boolean {
+  return Boolean(key && key.startsWith('sk-'));
 }
 
 function scanEnvByValuePrefix(prefixes: string[]): string {
@@ -60,7 +58,7 @@ function scanEnvByValuePrefix(prefixes: string[]): string {
 function getDetectedAiEnvVarNames(): string[] {
   const names: string[] = [];
   for (const [k] of Object.entries(process.env)) {
-    if (/(GROQ|GROK|XAI|GEMINI|COPILOT|OPENAI|DEEPSEEK|OPENROUTER|VERTEX)/i.test(k)) {
+    if (/(OPENROUTER|GEMINI|COPILOT|OPENAI|DEEPSEEK|VERTEX)/i.test(k)) {
       names.push(k);
     }
   }
@@ -84,7 +82,7 @@ function getGeminiApiKey(): string {
 
   for (const raw of candidates) {
     const val = getValidEnvValue(raw);
-    if (val && !isOpenAiOrGroqKey(val)) {
+    if (val && !isOpenAiOrOpenRouterKey(val)) {
       if (isGeminiFormattedKey(val) || raw === process.env.GEMINI_API_KEY) {
         return val;
       }
@@ -98,29 +96,41 @@ interface OpenAiCompatibleConfig {
   apiKey: string;
   baseUrl: string;
   models: string[];
+  isOpenRouter: boolean;
   hasExplicitProvider: boolean;
 }
 
+function getSiteReferer(): string {
+  const appUrl = getValidEnvValue(process.env.APP_URL);
+  if (appUrl) return appUrl;
+  const vercelUrl = getValidEnvValue(
+    process.env.VERCEL_PROJECT_PRODUCTION_URL || process.env.VERCEL_URL
+  );
+  if (vercelUrl) {
+    return vercelUrl.startsWith('http') ? vercelUrl : `https://${vercelUrl}`;
+  }
+  return 'http://localhost:3000';
+}
+
+function buildOpenAiCompatibleHeaders(cfg: OpenAiCompatibleConfig): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${cfg.apiKey}`,
+    'Content-Type': 'application/json',
+  };
+  if (cfg.isOpenRouter) {
+    headers['HTTP-Referer'] = getSiteReferer();
+    headers['X-Title'] = 'EduPulse';
+  }
+  return headers;
+}
+
 function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
-  const groqKey =
-    getValidEnvValue(
-      process.env.GROQ_API_KEY ||
-        process.env.GROK_API_KEY ||
-        process.env.GROQ_KEY ||
-        process.env.GROK_KEY ||
-        process.env.VITE_GROQ_API_KEY ||
-        process.env.VITE_GROK_API_KEY ||
-        process.env.NEXT_PUBLIC_GROQ_API_KEY ||
-        process.env.NEXT_PUBLIC_GROK_API_KEY
-    ) || scanEnvByValuePrefix(['gsk_']);
-
-  const xaiKey =
-    getValidEnvValue(process.env.XAI_API_KEY || process.env.VITE_XAI_API_KEY) ||
-    scanEnvByValuePrefix(['xai-']);
-
   const openrouterKey =
     getValidEnvValue(
-      process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY
+      process.env.OPENROUTER_API_KEY ||
+        process.env.OPENROUTER_KEY ||
+        process.env.VITE_OPENROUTER_API_KEY ||
+        process.env.NEXT_PUBLIC_OPENROUTER_API_KEY
     ) || scanEnvByValuePrefix(['sk-or-']);
 
   const deepseekKey = getValidEnvValue(
@@ -138,32 +148,29 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
       process.env.VITE_OPENAI_API_KEY ||
       process.env.API_KEY ||
       process.env.VITE_API_KEY ||
-      (isOpenAiOrGroqKey(misplacedInGemini) ? misplacedInGemini : '')
+      (isOpenAiOrOpenRouterKey(misplacedInGemini) ? misplacedInGemini : '')
   );
 
-  const apiKey = groqKey || xaiKey || genericKey || openrouterKey || deepseekKey;
+  const apiKey = openrouterKey || genericKey || deepseekKey;
   if (!apiKey || isGeminiFormattedKey(apiKey)) {
     return null;
   }
 
   const rawBase = getValidEnvValue(
-    process.env.COPILOT_BASE_URL ||
-      process.env.GROQ_BASE_URL ||
-      process.env.GROK_BASE_URL ||
+    process.env.OPENROUTER_BASE_URL ||
+      process.env.COPILOT_BASE_URL ||
       process.env.VITE_COPILOT_BASE_URL ||
       process.env.OPENAI_BASE_URL ||
       process.env.VITE_OPENAI_BASE_URL
   );
 
-  const isGroq = Boolean(apiKey.startsWith('gsk_') || (groqKey && !apiKey.startsWith('xai-') && !apiKey.startsWith('sk-')));
-  const isXai = Boolean(!isGroq && (xaiKey || apiKey.startsWith('xai-') || (!apiKey.startsWith('gsk_') && process.env.GROK_API_KEY && apiKey === getValidEnvValue(process.env.GROK_API_KEY))));
-  const isOpenRouter = Boolean(!isGroq && !isXai && (openrouterKey || apiKey.startsWith('sk-or-')));
-  const isDeepSeek = Boolean(!isGroq && !isXai && !isOpenRouter && deepseekKey);
+  const isOpenRouter = Boolean(
+    openrouterKey || apiKey.startsWith('sk-or-') || rawBase.includes('openrouter.ai')
+  );
+  const isDeepSeek = Boolean(!isOpenRouter && deepseekKey);
 
   const hasExplicitProvider = Boolean(
     rawBase ||
-      isGroq ||
-      isXai ||
       isOpenRouter ||
       isDeepSeek ||
       apiKey.startsWith('sk-proj-') ||
@@ -172,38 +179,29 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
 
   const inferredBase = rawBase
     ? rawBase.replace(/\/+$/, '')
-    : isGroq
-      ? 'https://api.groq.com/openai/v1'
-      : isXai
-        ? 'https://api.x.ai/v1'
-        : isOpenRouter
-          ? 'https://openrouter.ai/api/v1'
-          : isDeepSeek
-            ? 'https://api.deepseek.com/v1'
-            : 'https://api.openai.com/v1';
+    : isOpenRouter
+      ? 'https://openrouter.ai/api/v1'
+      : isDeepSeek
+        ? 'https://api.deepseek.com/v1'
+        : 'https://api.openai.com/v1';
 
   if (failedOpenAiAuthCache.has(`${inferredBase}::${apiKey}`) && getGeminiApiKey()) {
     return null;
   }
 
   const rawModel = getValidEnvValue(
-    process.env.GROQ_MODEL ||
-      process.env.GROK_MODEL ||
+    process.env.OPENROUTER_MODEL ||
       process.env.COPILOT_MODEL ||
       process.env.VITE_COPILOT_MODEL ||
       process.env.OPENAI_MODEL ||
       process.env.VITE_OPENAI_MODEL
   );
 
-  const defaultModels = inferredBase.includes('groq.com')
-    ? ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b']
-    : inferredBase.includes('x.ai')
-      ? ['grok-3-mini', 'grok-2-latest']
-      : inferredBase.includes('openrouter.ai')
-        ? ['openai/gpt-4o-mini']
-        : inferredBase.includes('deepseek.com')
-          ? ['deepseek-chat']
-          : ['gpt-4o-mini'];
+  const defaultModels = inferredBase.includes('openrouter.ai')
+    ? ['openai/gpt-4o-mini', 'openai/gpt-4o']
+    : inferredBase.includes('deepseek.com')
+      ? ['deepseek-chat']
+      : ['gpt-4o-mini'];
 
   const models = rawModel
     ? [rawModel, ...defaultModels.filter((m) => m !== rawModel)]
@@ -213,6 +211,7 @@ function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
     apiKey,
     baseUrl: inferredBase,
     models,
+    isOpenRouter,
     hasExplicitProvider,
   };
 }
@@ -324,7 +323,7 @@ function buildSystemInstruction(
       const joined = context.fullNoteContent
         .map((sec, idx) => `[Section ${idx + 1}]\n${sec}`)
         .join('\n\n')
-        .slice(0, 14000);
+        .slice(0, 4000);
       lines.push('Complete Study Note Reference:', joined);
     }
     lines.push('=== END STUDY NOTE CONTEXT ===');
@@ -360,7 +359,7 @@ function buildSystemInstruction(
 function sanitizeMessages(messages: IncomingCopilotMessage[]): IncomingCopilotMessage[] {
   return messages
     .filter((m) => m && typeof m.content === 'string' && m.content.trim().length > 0)
-    .slice(-16)
+    .slice(-8)
     .map((m) => ({
       role: m.role === 'assistant' ? 'assistant' : 'user',
       content: m.content.trim(),
@@ -425,14 +424,12 @@ async function callOpenAiCompatibleUnary(
     const modelName = tryList[i];
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${cfg.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      signal: AbortSignal.timeout(18000),
+      headers: buildOpenAiCompatibleHeaders(cfg),
+      signal: AbortSignal.timeout(20000),
       body: JSON.stringify({
         model: modelName,
-        temperature: 0.4,
+        max_tokens: 600,
+        temperature: 0.35,
         messages: [
           { role: 'system', content: systemInstruction },
           ...messages.map((m) => ({ role: m.role, content: m.content })),
@@ -446,7 +443,7 @@ async function callOpenAiCompatibleUnary(
       }
       const errBody = await response.text().catch(() => '');
       const err = new Error(
-        `Copilot provider (${cfg.baseUrl}) returned ${response.status}: ${errBody.slice(0, 240)}`
+        `OpenRouter (${modelName}) returned ${response.status}: ${errBody.slice(0, 240)}`
       );
       (err as any).statusCode = response.status;
       lastErr = err;
@@ -469,7 +466,7 @@ async function callOpenAiCompatibleUnary(
     if (cleaned) return cleaned;
   }
 
-  throw lastErr || new Error('Copilot provider returned an empty response.');
+  throw lastErr || new Error('OpenRouter returned an empty response.');
 }
 
 async function streamOpenAiCompatible(
@@ -490,14 +487,12 @@ async function streamOpenAiCompatible(
     const modelName = tryList[i];
     const response = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${cfg.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      signal: AbortSignal.timeout(25000),
+      headers: buildOpenAiCompatibleHeaders(cfg),
+      signal: AbortSignal.timeout(22000),
       body: JSON.stringify({
         model: modelName,
-        temperature: 0.4,
+        max_tokens: 600,
+        temperature: 0.35,
         stream: true,
         messages: [
           { role: 'system', content: systemInstruction },
@@ -512,7 +507,7 @@ async function streamOpenAiCompatible(
       }
       const errBody = await response.text().catch(() => '');
       const err = new Error(
-        `Copilot provider (${cfg.baseUrl}) returned ${response.status}: ${errBody.slice(0, 240)}`
+        `OpenRouter (${modelName}) returned ${response.status}: ${errBody.slice(0, 240)}`
       );
       (err as any).statusCode = response.status;
       lastErr = err;
@@ -636,7 +631,7 @@ async function generateWithGeminiKeyFallback(
 
 function formatCopilotError(err: any): { status: number; message: string; code?: string } {
   const rawMessage = String(
-    err?.message || err || 'Failed to generate response from Study Copilot.'
+    err?.message || err || 'Failed to generate response from OpenRouter AI.'
   );
   const status = Number(err?.status || err?.statusCode || 500);
 
@@ -652,8 +647,8 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
       status: 400,
       code: 'API_KEY_MISSING',
       message: process.env.VERCEL
-        ? `Study Copilot has no AI key in this Vercel deployment yet${diagHint}. In Vercel → Project Settings → Environment Variables, set GROQ_API_KEY to your gsk_... key, make sure Production, Preview, and Development are all checked, click Save, and then click Deployments → ⋯ → Redeploy.`
-        : 'No active AI key configured. Set GROQ_API_KEY or GEMINI_API_KEY in .env.',
+        ? `OPENROUTER_API_KEY is not set in this Vercel deployment yet${diagHint}. In Vercel → Project Settings → Environment Variables, add OPENROUTER_API_KEY with your sk-or-v1-... key, make sure Production, Preview, and Development are checked, click Save, and then go to Deployments → ⋯ → Redeploy.`
+        : 'OPENROUTER_API_KEY is not configured. Set OPENROUTER_API_KEY in .env.',
     };
   }
 
@@ -670,7 +665,7 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
       status: 400,
       code: 'CUSTOM_SK_KEY_NEEDS_BASE_URL',
       message:
-        'Your sk-... key was rejected by api.openai.com (401). Set GROQ_API_KEY to your gsk_... key in Vercel → Project Settings → Environment Variables, then click Deployments → Redeploy.',
+        'Set OPENROUTER_API_KEY to your sk-or-v1-... OpenRouter key in Vercel → Project Settings → Environment Variables, click Save, and then click Deployments → Redeploy.',
     };
   }
 
@@ -682,8 +677,8 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
       status: status === 403 ? 403 : 400,
       code: 'API_KEY_ERROR',
       message: process.env.VERCEL
-        ? 'Study Copilot could not authenticate with the configured API key on Vercel. Verify GROQ_API_KEY (gsk_...) in Vercel → Project Settings → Environment Variables has no extra spaces, then Redeploy.'
-        : 'Study Copilot could not authenticate with the configured AI key.',
+        ? 'OpenRouter rejected the configured API key on Vercel. Verify OPENROUTER_API_KEY (sk-or-v1-...) in Vercel → Project Settings → Environment Variables has no extra spaces, then Redeploy.'
+        : 'OpenRouter rejected the configured API key. Check OPENROUTER_API_KEY in .env.',
     };
   }
 
@@ -692,7 +687,7 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
       status: 429,
       code: 'RESOURCE_EXHAUSTED',
       message:
-        'Study Copilot reached its current request quota. Please wait a moment and try again.',
+        'OpenRouter rate limit reached. Please wait a few seconds and try again.',
     };
   }
 
@@ -701,7 +696,7 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
       status: 503,
       code: 'MODEL_BUSY',
       message:
-        'Study Copilot is experiencing temporary high demand. Please retry your question in a few seconds.',
+        'OpenRouter is experiencing temporary high demand. Please retry your question in a few seconds.',
     };
   }
 
@@ -717,7 +712,8 @@ export function handleCopilotStatus(_req: Request, res: Response) {
   const preferOpenAiFirst = Boolean(openAiCfg && (!geminiKey || openAiCfg.hasExplicitProvider));
   const hasCustomBaseUrl = Boolean(
     getValidEnvValue(
-      process.env.COPILOT_BASE_URL ||
+      process.env.OPENROUTER_BASE_URL ||
+        process.env.COPILOT_BASE_URL ||
         process.env.VITE_COPILOT_BASE_URL ||
         process.env.OPENAI_BASE_URL
     )
@@ -725,11 +721,9 @@ export function handleCopilotStatus(_req: Request, res: Response) {
 
   const activeProvider =
     preferOpenAiFirst && openAiCfg
-      ? openAiCfg.baseUrl.includes('groq.com')
-        ? 'groq'
-        : openAiCfg.baseUrl.includes('x.ai')
-          ? 'xai'
-          : 'openai-compatible'
+      ? openAiCfg.isOpenRouter
+        ? 'openrouter'
+        : 'openai-compatible'
       : geminiKey
         ? 'gemini'
         : openAiCfg

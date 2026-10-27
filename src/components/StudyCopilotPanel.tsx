@@ -712,7 +712,7 @@ export const StudyCopilotPanel: React.FC<StudyCopilotPanelProps> = ({
         {errorBanner && (
           <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 text-xs text-red-200 flex items-start justify-between gap-3">
             <div className="leading-relaxed">
-              <span className="font-semibold text-red-300">Copilot Notice: </span>
+              <span className="font-semibold text-red-300">OpenRouter Notice: </span>
               {errorBanner}
             </div>
             <button
