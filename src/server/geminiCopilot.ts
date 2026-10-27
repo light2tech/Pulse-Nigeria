@@ -41,47 +41,58 @@ function isGeminiFormattedKey(key: string): boolean {
   return Boolean(key && (key.startsWith('AIza') || key.startsWith('AQ.')));
 }
 
-function getGeminiApiKey(): string {
-  const explicitGemini = getValidEnvValue(
-    process.env.GEMINI_API_KEY ||
-      process.env.VERTEX_API_KEY ||
-      process.env.GOOGLE_API_KEY ||
-      process.env.GOOGLE_CLOUD_API_KEY ||
-      process.env.VITE_GEMINI_API_KEY ||
-      process.env.VITE_GOOGLE_API_KEY ||
-      process.env.NEXT_PUBLIC_GEMINI_API_KEY
-  );
-  if (explicitGemini) {
-    return explicitGemini;
-  }
+function isOpenAiOrGroqKey(key: string): boolean {
+  return Boolean(key && (key.startsWith('gsk_') || key.startsWith('sk-')));
+}
 
-  const candidateFallback = getValidEnvValue(
-    process.env.COPILOT_API_KEY ||
-      process.env.VITE_COPILOT_API_KEY ||
-      process.env.API_KEY ||
-      process.env.VITE_API_KEY
-  );
-  if (isGeminiFormattedKey(candidateFallback)) {
-    return candidateFallback;
+function getGeminiApiKey(): string {
+  const candidates = [
+    process.env.GEMINI_API_KEY,
+    process.env.VERTEX_API_KEY,
+    process.env.GOOGLE_API_KEY,
+    process.env.GOOGLE_CLOUD_API_KEY,
+    process.env.VITE_GEMINI_API_KEY,
+    process.env.VITE_GOOGLE_API_KEY,
+    process.env.NEXT_PUBLIC_GEMINI_API_KEY,
+    process.env.COPILOT_API_KEY,
+    process.env.VITE_COPILOT_API_KEY,
+    process.env.API_KEY,
+    process.env.VITE_API_KEY,
+  ];
+
+  for (const raw of candidates) {
+    const val = getValidEnvValue(raw);
+    if (val && !isOpenAiOrGroqKey(val)) {
+      if (isGeminiFormattedKey(val) || raw === process.env.GEMINI_API_KEY) {
+        return val;
+      }
+    }
   }
 
   return '';
 }
 
-function getOpenAiCompatibleConfig(): {
+interface OpenAiCompatibleConfig {
   apiKey: string;
   baseUrl: string;
-  model: string;
+  models: string[];
   hasExplicitProvider: boolean;
-} | null {
-  const deepseekKey = getValidEnvValue(
-    process.env.DEEPSEEK_API_KEY || process.env.VITE_DEEPSEEK_API_KEY
+}
+
+function getOpenAiCompatibleConfig(): OpenAiCompatibleConfig | null {
+  const groqKey = getValidEnvValue(
+    process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY
   );
   const openrouterKey = getValidEnvValue(
     process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY
   );
-  const groqKey = getValidEnvValue(
-    process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY
+  const deepseekKey = getValidEnvValue(
+    process.env.DEEPSEEK_API_KEY || process.env.VITE_DEEPSEEK_API_KEY
+  );
+
+  // Also detect if user pasted a gsk_... or sk-... key into COPILOT_API_KEY or GEMINI_API_KEY
+  const misplacedInGemini = getValidEnvValue(
+    process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY
   );
   const genericKey = getValidEnvValue(
     process.env.COPILOT_API_KEY ||
@@ -89,39 +100,43 @@ function getOpenAiCompatibleConfig(): {
       process.env.OPENAI_API_KEY ||
       process.env.VITE_OPENAI_API_KEY ||
       process.env.API_KEY ||
-      process.env.VITE_API_KEY
+      process.env.VITE_API_KEY ||
+      (isOpenAiOrGroqKey(misplacedInGemini) ? misplacedInGemini : '')
   );
 
-  const apiKey = genericKey || deepseekKey || openrouterKey || groqKey;
+  const apiKey = groqKey || genericKey || openrouterKey || deepseekKey;
   if (!apiKey || isGeminiFormattedKey(apiKey)) {
     return null;
   }
 
   const rawBase = getValidEnvValue(
     process.env.COPILOT_BASE_URL ||
+      process.env.GROQ_BASE_URL ||
       process.env.VITE_COPILOT_BASE_URL ||
       process.env.OPENAI_BASE_URL ||
       process.env.VITE_OPENAI_BASE_URL
   );
 
+  const isGroq = Boolean(groqKey || apiKey.startsWith('gsk_'));
+  const isOpenRouter = Boolean(!isGroq && (openrouterKey || apiKey.startsWith('sk-or-')));
+  const isDeepSeek = Boolean(!isGroq && !isOpenRouter && deepseekKey);
+
   const hasExplicitProvider = Boolean(
     rawBase ||
-      openrouterKey ||
-      groqKey ||
-      deepseekKey ||
+      isGroq ||
+      isOpenRouter ||
+      isDeepSeek ||
       apiKey.startsWith('sk-proj-') ||
-      apiKey.startsWith('sk-svcacct-') ||
-      apiKey.startsWith('sk-or-') ||
-      apiKey.startsWith('gsk_')
+      apiKey.startsWith('sk-svcacct-')
   );
 
   const inferredBase = rawBase
     ? rawBase.replace(/\/+$/, '')
-    : openrouterKey || apiKey.startsWith('sk-or-')
-      ? 'https://openrouter.ai/api/v1'
-      : groqKey || apiKey.startsWith('gsk_')
-        ? 'https://api.groq.com/openai/v1'
-        : deepseekKey
+    : isGroq
+      ? 'https://api.groq.com/openai/v1'
+      : isOpenRouter
+        ? 'https://openrouter.ai/api/v1'
+        : isDeepSeek
           ? 'https://api.deepseek.com/v1'
           : 'https://api.openai.com/v1';
 
@@ -130,25 +145,29 @@ function getOpenAiCompatibleConfig(): {
   }
 
   const rawModel = getValidEnvValue(
-    process.env.COPILOT_MODEL ||
+    process.env.GROQ_MODEL ||
+      process.env.COPILOT_MODEL ||
       process.env.VITE_COPILOT_MODEL ||
       process.env.OPENAI_MODEL ||
       process.env.VITE_OPENAI_MODEL
   );
-  const inferredModel = rawModel
-    ? rawModel
+
+  const defaultModels = inferredBase.includes('groq.com')
+    ? ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant']
     : inferredBase.includes('openrouter.ai')
-      ? 'openai/gpt-4o-mini'
-      : inferredBase.includes('groq.com')
-        ? 'llama-3.3-70b-versatile'
-        : inferredBase.includes('deepseek.com')
-          ? 'deepseek-chat'
-          : 'gpt-4o-mini';
+      ? ['openai/gpt-4o-mini']
+      : inferredBase.includes('deepseek.com')
+        ? ['deepseek-chat']
+        : ['gpt-4o-mini'];
+
+  const models = rawModel
+    ? [rawModel, ...defaultModels.filter((m) => m !== rawModel)]
+    : defaultModels;
 
   return {
     apiKey,
     baseUrl: inferredBase,
-    model: inferredModel,
+    models,
     hasExplicitProvider,
   };
 }
@@ -311,7 +330,7 @@ function buildGeminiContents(messages: IncomingCopilotMessage[]) {
 }
 
 async function callOpenAiCompatibleUnary(
-  cfg: { apiKey: string; baseUrl: string; model: string },
+  cfg: OpenAiCompatibleConfig,
   systemInstruction: string,
   messages: IncomingCopilotMessage[]
 ): Promise<string> {
@@ -319,41 +338,51 @@ async function callOpenAiCompatibleUnary(
     ? cfg.baseUrl
     : `${cfg.baseUrl}/chat/completions`;
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${cfg.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    signal: AbortSignal.timeout(15000),
-    body: JSON.stringify({
-      model: cfg.model,
-      temperature: 0.4,
-      messages: [
-        { role: 'system', content: systemInstruction },
-        ...messages.map((m) => ({ role: m.role, content: m.content })),
-      ],
-    }),
-  });
+  let lastErr: any;
+  for (const modelName of cfg.models) {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(18000),
+      body: JSON.stringify({
+        model: modelName,
+        temperature: 0.4,
+        messages: [
+          { role: 'system', content: systemInstruction },
+          ...messages.map((m) => ({ role: m.role, content: m.content })),
+        ],
+      }),
+    });
 
-  if (!response.ok) {
-    if (response.status === 401) {
-      failedOpenAiAuthCache.add(`${cfg.baseUrl}::${cfg.apiKey}`);
+    if (!response.ok) {
+      if (response.status === 401) {
+        failedOpenAiAuthCache.add(`${cfg.baseUrl}::${cfg.apiKey}`);
+      }
+      const errBody = await response.text().catch(() => '');
+      const err = new Error(
+        `Copilot provider (${cfg.baseUrl}) returned ${response.status}: ${errBody.slice(0, 240)}`
+      );
+      (err as any).statusCode = response.status;
+      lastErr = err;
+      if (response.status === 401 || response.status === 403) {
+        throw err;
+      }
+      continue;
     }
-    const errBody = await response.text().catch(() => '');
-    const err = new Error(
-      `Copilot provider (${cfg.baseUrl}) returned ${response.status}: ${errBody.slice(0, 240)}`
-    );
-    (err as any).statusCode = response.status;
-    throw err;
+
+    const data: any = await response.json();
+    const content = String(data?.choices?.[0]?.message?.content || '').trim();
+    if (content) return content;
   }
 
-  const data: any = await response.json();
-  return String(data?.choices?.[0]?.message?.content || '').trim();
+  throw lastErr || new Error('Copilot provider returned an empty response.');
 }
 
 async function streamOpenAiCompatible(
-  cfg: { apiKey: string; baseUrl: string; model: string },
+  cfg: OpenAiCompatibleConfig,
   systemInstruction: string,
   messages: IncomingCopilotMessage[],
   onChunk: (delta: string) => void
@@ -362,67 +391,79 @@ async function streamOpenAiCompatible(
     ? cfg.baseUrl
     : `${cfg.baseUrl}/chat/completions`;
 
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${cfg.apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    signal: AbortSignal.timeout(20000),
-    body: JSON.stringify({
-      model: cfg.model,
-      temperature: 0.4,
-      stream: true,
-      messages: [
-        { role: 'system', content: systemInstruction },
-        ...messages.map((m) => ({ role: m.role, content: m.content })),
-      ],
-    }),
-  });
+  let lastErr: any;
+  for (const modelName of cfg.models) {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      signal: AbortSignal.timeout(25000),
+      body: JSON.stringify({
+        model: modelName,
+        temperature: 0.4,
+        stream: true,
+        messages: [
+          { role: 'system', content: systemInstruction },
+          ...messages.map((m) => ({ role: m.role, content: m.content })),
+        ],
+      }),
+    });
 
-  if (!response.ok || !response.body) {
-    if (response.status === 401) {
-      failedOpenAiAuthCache.add(`${cfg.baseUrl}::${cfg.apiKey}`);
+    if (!response.ok || !response.body) {
+      if (response.status === 401) {
+        failedOpenAiAuthCache.add(`${cfg.baseUrl}::${cfg.apiKey}`);
+      }
+      const errBody = await response.text().catch(() => '');
+      const err = new Error(
+        `Copilot provider (${cfg.baseUrl}) returned ${response.status}: ${errBody.slice(0, 240)}`
+      );
+      (err as any).statusCode = response.status;
+      lastErr = err;
+      if (response.status === 401 || response.status === 403) {
+        throw err;
+      }
+      continue;
     }
-    const errBody = await response.text().catch(() => '');
-    const err = new Error(
-      `Copilot provider (${cfg.baseUrl}) returned ${response.status}: ${errBody.slice(0, 240)}`
-    );
-    (err as any).statusCode = response.status;
-    throw err;
-  }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let streamedAny = false;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let streamedAny = false;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-    for (const rawLine of lines) {
-      const trimmed = rawLine.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const dataStr = trimmed.slice(5).trim();
-      if (!dataStr || dataStr === '[DONE]') continue;
-      try {
-        const parsed = JSON.parse(dataStr);
-        const delta = parsed?.choices?.[0]?.delta?.content;
-        if (delta) {
-          streamedAny = true;
-          onChunk(delta);
+      for (const rawLine of lines) {
+        const trimmed = rawLine.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const dataStr = trimmed.slice(5).trim();
+        if (!dataStr || dataStr === '[DONE]') continue;
+        try {
+          const parsed = JSON.parse(dataStr);
+          const delta = parsed?.choices?.[0]?.delta?.content;
+          if (delta) {
+            streamedAny = true;
+            onChunk(delta);
+          }
+        } catch {
+          // ignore partial SSE line
         }
-      } catch {
-        // ignore partial SSE line
       }
     }
+
+    if (streamedAny) {
+      return true;
+    }
   }
 
-  return streamedAny;
+  if (lastErr) throw lastErr;
+  return false;
 }
 
 function buildGeminiConfig(modelName: string, systemInstruction: string) {
@@ -564,6 +605,7 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
 export function handleCopilotStatus(_req: Request, res: Response) {
   const geminiKey = getGeminiApiKey();
   const openAiCfg = getOpenAiCompatibleConfig();
+  const preferOpenAiFirst = Boolean(openAiCfg && (!geminiKey || openAiCfg.hasExplicitProvider));
   const hasCustomBaseUrl = Boolean(
     getValidEnvValue(
       process.env.COPILOT_BASE_URL ||
@@ -572,14 +614,21 @@ export function handleCopilotStatus(_req: Request, res: Response) {
     )
   );
 
+  const activeProvider =
+    preferOpenAiFirst && openAiCfg
+      ? openAiCfg.baseUrl.includes('groq.com')
+        ? 'groq'
+        : 'openai-compatible'
+      : geminiKey
+        ? 'gemini'
+        : openAiCfg
+          ? 'openai-compatible'
+          : 'none';
+
   res.json({
     ok: true,
     configured: Boolean(geminiKey || openAiCfg),
-    provider: geminiKey
-      ? 'gemini'
-      : openAiCfg
-        ? 'openai-compatible'
-        : 'none',
+    provider: activeProvider,
     hasCustomBaseUrl,
     runtime: process.env.VERCEL ? 'vercel' : 'node',
   });
