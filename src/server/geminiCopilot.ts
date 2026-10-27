@@ -13,8 +13,13 @@ const VERCEL_GEMINI_MODELS = [
   'gemini-3.8-flash',
 ] as const;
 
-function getGeminiModelCandidates(): readonly string[] {
-  return process.env.VERCEL ? VERCEL_GEMINI_MODELS : DEFAULT_GEMINI_MODELS;
+function getGeminiModelCandidates(): string[] {
+  const customModel = getValidEnvValue(process.env.GEMINI_MODEL || process.env.VITE_GEMINI_MODEL);
+  const defaults = process.env.VERCEL ? VERCEL_GEMINI_MODELS : DEFAULT_GEMINI_MODELS;
+  if (customModel && !defaults.includes(customModel as any)) {
+    return [customModel, ...defaults];
+  }
+  return [...defaults];
 }
 
 const failedOpenAiAuthCache = new Set<string>();
@@ -32,30 +37,82 @@ function getValidEnvValue(raw?: string): string {
   return trimmed;
 }
 
+function isGeminiFormattedKey(key: string): boolean {
+  return Boolean(key && (key.startsWith('AIza') || key.startsWith('AQ.')));
+}
+
 function getGeminiApiKey(): string {
-  const copilotKey = getValidEnvValue(process.env.COPILOT_API_KEY);
-  if (copilotKey && (copilotKey.startsWith('AIza') || copilotKey.startsWith('AQ.'))) {
-    return copilotKey;
+  const explicitGemini = getValidEnvValue(
+    process.env.GEMINI_API_KEY ||
+      process.env.GOOGLE_API_KEY ||
+      process.env.VITE_GEMINI_API_KEY ||
+      process.env.VITE_GOOGLE_API_KEY ||
+      process.env.NEXT_PUBLIC_GEMINI_API_KEY
+  );
+  if (explicitGemini) {
+    return explicitGemini;
   }
-  return getValidEnvValue(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY);
+
+  const candidateFallback = getValidEnvValue(
+    process.env.COPILOT_API_KEY ||
+      process.env.VITE_COPILOT_API_KEY ||
+      process.env.API_KEY ||
+      process.env.VITE_API_KEY
+  );
+  if (isGeminiFormattedKey(candidateFallback)) {
+    return candidateFallback;
+  }
+
+  return '';
 }
 
 function getOpenAiCompatibleConfig(): {
   apiKey: string;
   baseUrl: string;
   model: string;
+  hasExplicitProvider: boolean;
 } | null {
-  const deepseekKey = getValidEnvValue(process.env.DEEPSEEK_API_KEY);
-  const openrouterKey = getValidEnvValue(process.env.OPENROUTER_API_KEY);
-  const groqKey = getValidEnvValue(process.env.GROQ_API_KEY);
-  const genericKey = getValidEnvValue(process.env.COPILOT_API_KEY || process.env.OPENAI_API_KEY);
+  const deepseekKey = getValidEnvValue(
+    process.env.DEEPSEEK_API_KEY || process.env.VITE_DEEPSEEK_API_KEY
+  );
+  const openrouterKey = getValidEnvValue(
+    process.env.OPENROUTER_API_KEY || process.env.VITE_OPENROUTER_API_KEY
+  );
+  const groqKey = getValidEnvValue(
+    process.env.GROQ_API_KEY || process.env.VITE_GROQ_API_KEY
+  );
+  const genericKey = getValidEnvValue(
+    process.env.COPILOT_API_KEY ||
+      process.env.VITE_COPILOT_API_KEY ||
+      process.env.OPENAI_API_KEY ||
+      process.env.VITE_OPENAI_API_KEY ||
+      process.env.API_KEY ||
+      process.env.VITE_API_KEY
+  );
 
   const apiKey = genericKey || deepseekKey || openrouterKey || groqKey;
-  if (!apiKey || apiKey.startsWith('AIza') || apiKey.startsWith('AQ.')) {
+  if (!apiKey || isGeminiFormattedKey(apiKey)) {
     return null;
   }
 
-  const rawBase = getValidEnvValue(process.env.COPILOT_BASE_URL || process.env.OPENAI_BASE_URL);
+  const rawBase = getValidEnvValue(
+    process.env.COPILOT_BASE_URL ||
+      process.env.VITE_COPILOT_BASE_URL ||
+      process.env.OPENAI_BASE_URL ||
+      process.env.VITE_OPENAI_BASE_URL
+  );
+
+  const hasExplicitProvider = Boolean(
+    rawBase ||
+      openrouterKey ||
+      groqKey ||
+      deepseekKey ||
+      apiKey.startsWith('sk-proj-') ||
+      apiKey.startsWith('sk-svcacct-') ||
+      apiKey.startsWith('sk-or-') ||
+      apiKey.startsWith('gsk_')
+  );
+
   const inferredBase = rawBase
     ? rawBase.replace(/\/+$/, '')
     : openrouterKey || apiKey.startsWith('sk-or-')
@@ -66,12 +123,16 @@ function getOpenAiCompatibleConfig(): {
           ? 'https://api.deepseek.com/v1'
           : 'https://api.openai.com/v1';
 
-  // If this exact (key, baseUrl) already returned 401 and Gemini is available, skip redundant 401 round-trips
   if (failedOpenAiAuthCache.has(`${inferredBase}::${apiKey}`) && getGeminiApiKey()) {
     return null;
   }
 
-  const rawModel = getValidEnvValue(process.env.COPILOT_MODEL || process.env.OPENAI_MODEL);
+  const rawModel = getValidEnvValue(
+    process.env.COPILOT_MODEL ||
+      process.env.VITE_COPILOT_MODEL ||
+      process.env.OPENAI_MODEL ||
+      process.env.VITE_OPENAI_MODEL
+  );
   const inferredModel = rawModel
     ? rawModel
     : inferredBase.includes('openrouter.ai')
@@ -86,6 +147,7 @@ function getOpenAiCompatibleConfig(): {
     apiKey,
     baseUrl: inferredBase,
     model: inferredModel,
+    hasExplicitProvider,
   };
 }
 
@@ -396,16 +458,43 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
   );
   const status = Number(err?.status || err?.statusCode || 500);
 
+  if (err?.code === 'API_KEY_MISSING') {
+    return {
+      status: 400,
+      code: 'API_KEY_MISSING',
+      message: process.env.VERCEL
+        ? 'Study Copilot has no AI key in this Vercel deployment yet. In Vercel → Settings → Environment Variables, add GEMINI_API_KEY (a free key starting with AIza... from aistudio.google.com/apikey), then go to Deployments → Redeploy.'
+        : 'No active AI key configured. Set GEMINI_API_KEY in Settings > Secrets.',
+    };
+  }
+
   if (
-    err?.code === 'API_KEY_MISSING' ||
-    ((status === 400 || status === 401 || status === 403) &&
-      /API_KEY|Unauthorized|Incorrect API key|authentication|invalid_api_key/i.test(rawMessage))
+    status === 401 &&
+    rawMessage.includes('api.openai.com') &&
+    !getValidEnvValue(
+      process.env.COPILOT_BASE_URL ||
+        process.env.VITE_COPILOT_BASE_URL ||
+        process.env.OPENAI_BASE_URL
+    )
+  ) {
+    return {
+      status: 400,
+      code: 'CUSTOM_SK_KEY_NEEDS_BASE_URL',
+      message:
+        'Your sk-... key was rejected by api.openai.com (401) because it comes from a third-party gateway rather than OpenAI directly. Either: (1) Replace it with GEMINI_API_KEY (a free AIza... key from aistudio.google.com/apikey) in Vercel Environment Variables, OR (2) Also add COPILOT_BASE_URL and COPILOT_MODEL from the provider where you generated that sk-... key, then Redeploy.',
+    };
+  }
+
+  if (
+    (status === 400 || status === 401 || status === 403) &&
+    /API_KEY|Unauthorized|Incorrect API key|authentication|invalid_api_key/i.test(rawMessage)
   ) {
     return {
       status: status === 403 ? 403 : 400,
       code: 'API_KEY_ERROR',
-      message:
-        'Study Copilot could not authenticate with the configured AI key. If using a custom sk-... gateway key, ensure COPILOT_BASE_URL (and COPILOT_MODEL) are also set in Environment Variables, or configure GEMINI_API_KEY in Settings > Secrets.',
+      message: process.env.VERCEL
+        ? 'Study Copilot could not authenticate with the configured API key on Vercel. Verify GEMINI_API_KEY (or COPILOT_API_KEY + COPILOT_BASE_URL) in Vercel → Settings → Environment Variables without extra spaces, then Redeploy.'
+        : 'Study Copilot could not authenticate with the configured AI key. Check your key in Settings > Secrets.',
     };
   }
 
@@ -414,7 +503,7 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
       status: 429,
       code: 'RESOURCE_EXHAUSTED',
       message:
-        'Study Copilot reached its current request quota. Please wait a moment and try again, or select a billing-enabled API key in Settings > Secrets.',
+        'Study Copilot reached its current request quota. Please wait a moment and try again.',
     };
   }
 
@@ -431,6 +520,30 @@ function formatCopilotError(err: any): { status: number; message: string; code?:
     status: status >= 400 && status < 600 ? status : 500,
     message: rawMessage,
   };
+}
+
+export function handleCopilotStatus(_req: Request, res: Response) {
+  const geminiKey = getGeminiApiKey();
+  const openAiCfg = getOpenAiCompatibleConfig();
+  const hasCustomBaseUrl = Boolean(
+    getValidEnvValue(
+      process.env.COPILOT_BASE_URL ||
+        process.env.VITE_COPILOT_BASE_URL ||
+        process.env.OPENAI_BASE_URL
+    )
+  );
+
+  res.json({
+    ok: true,
+    configured: Boolean(geminiKey || openAiCfg),
+    provider: geminiKey
+      ? 'gemini'
+      : openAiCfg
+        ? 'openai-compatible'
+        : 'none',
+    hasCustomBaseUrl,
+    runtime: process.env.VERCEL ? 'vercel' : 'node',
+  });
 }
 
 export async function handleCopilotChat(req: Request, res: Response) {
@@ -450,8 +563,9 @@ export async function handleCopilotChat(req: Request, res: Response) {
     const systemInstruction = buildSystemInstruction(context, student);
     const openAiCfg = getOpenAiCompatibleConfig();
     const geminiKey = getGeminiApiKey();
+    const preferOpenAiFirst = Boolean(openAiCfg && (!geminiKey || openAiCfg.hasExplicitProvider));
 
-    if (openAiCfg) {
+    if (preferOpenAiFirst && openAiCfg) {
       try {
         const reply = await callOpenAiCompatibleUnary(openAiCfg, systemInstruction, sanitized);
         if (reply) {
@@ -465,23 +579,32 @@ export async function handleCopilotChat(req: Request, res: Response) {
       }
     }
 
-    if (!geminiKey) {
-      const err = new Error(
-        'No active AI key configured. Set GEMINI_API_KEY (or COPILOT_API_KEY + COPILOT_BASE_URL) in Environment Variables.'
-      );
-      (err as any).statusCode = 400;
-      (err as any).code = 'API_KEY_MISSING';
-      throw err;
+    if (geminiKey) {
+      try {
+        const ai = createGeminiClient(geminiKey);
+        const reply = await generateWithGeminiFallback(
+          ai,
+          buildGeminiContents(sanitized),
+          systemInstruction
+        );
+        res.json({ reply });
+        return;
+      } catch (geminiErr) {
+        if (!preferOpenAiFirst && openAiCfg) {
+          const reply = await callOpenAiCompatibleUnary(openAiCfg, systemInstruction, sanitized);
+          if (reply) {
+            res.json({ reply });
+            return;
+          }
+        }
+        throw geminiErr;
+      }
     }
 
-    const ai = createGeminiClient(geminiKey);
-    const reply = await generateWithGeminiFallback(
-      ai,
-      buildGeminiContents(sanitized),
-      systemInstruction
-    );
-
-    res.json({ reply });
+    const err = new Error('No active AI key configured.');
+    (err as any).statusCode = 400;
+    (err as any).code = 'API_KEY_MISSING';
+    throw err;
   } catch (err: any) {
     const formatted = formatCopilotError(err);
     res.status(formatted.status).json({
@@ -508,17 +631,19 @@ export async function handleCopilotStream(req: Request, res: Response) {
     const systemInstruction = buildSystemInstruction(context, student);
     const openAiCfg = getOpenAiCompatibleConfig();
     const geminiKey = getGeminiApiKey();
+    const preferOpenAiFirst = Boolean(openAiCfg && (!geminiKey || openAiCfg.hasExplicitProvider));
 
     const startSseHeaders = () => {
       if (!res.headersSent) {
         res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
         res.setHeader('Cache-Control', 'no-cache, no-transform');
         res.setHeader('Connection', 'keep-alive');
+        res.setHeader('X-Accel-Buffering', 'no');
         res.flushHeaders?.();
       }
     };
 
-    if (openAiCfg) {
+    if (preferOpenAiFirst && openAiCfg) {
       try {
         let headersOpened = false;
         const streamedAny = await streamOpenAiCompatible(
@@ -547,9 +672,7 @@ export async function handleCopilotStream(req: Request, res: Response) {
     }
 
     if (!geminiKey) {
-      const err = new Error(
-        'No active AI key configured. Set GEMINI_API_KEY (or COPILOT_API_KEY + COPILOT_BASE_URL) in Environment Variables.'
-      );
+      const err = new Error('No active AI key configured.');
       (err as any).statusCode = 400;
       (err as any).code = 'API_KEY_MISSING';
       throw err;

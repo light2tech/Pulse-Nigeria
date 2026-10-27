@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import { createClient } from '@supabase/supabase-js';
 import { seedJambSyllabusAndPastQuestions } from './jambSyllabusSeed';
-import { handleCopilotChat, handleCopilotStream } from './geminiCopilot';
+import { handleCopilotChat, handleCopilotStatus, handleCopilotStream } from './geminiCopilot';
 
 export const PLACEHOLDER_SUPABASE_URL = 'https://placeholder.supabase.co';
 export const PLACEHOLDER_SECRET_KEY = 'placeholder-server-key-configure-env';
@@ -2070,6 +2070,7 @@ export function createApiApp(options: ApiAppOptions = {}) {
   });
 
   // Server-side Gemini Study Copilot endpoints (answering student questions & explaining study notes)
+  router.get('/copilot/status', handleCopilotStatus);
   router.post('/copilot/chat', handleCopilotChat);
   router.post('/copilot/stream', handleCopilotStream);
 

@@ -7,10 +7,20 @@ export default function handler(req: any, res: any) {
     const rawUrl = String(req?.url || '/');
     const parsed = new URL(rawUrl, 'http://localhost');
 
+    const searchMulti =
+      parsed.searchParams.getAll('__path').length > 0
+        ? parsed.searchParams.getAll('__path')
+        : parsed.searchParams.getAll('...path').length > 0
+          ? parsed.searchParams.getAll('...path')
+          : parsed.searchParams.getAll('path').length > 0
+            ? parsed.searchParams.getAll('path')
+            : null;
+
     const queryPath =
       req?.query?.__path ??
-      parsed.searchParams.get('__path') ??
-      req?.query?.path;
+      req?.query?.['...path'] ??
+      req?.query?.path ??
+      searchMulti;
 
     const isGenericEntryPath =
       parsed.pathname === '/' ||
@@ -23,25 +33,30 @@ export default function handler(req: any, res: any) {
       parsed.pathname.includes('[...');
 
     if (queryPath && isGenericEntryPath) {
-      const subPath = (Array.isArray(queryPath) ? queryPath.join('/') : String(queryPath))
-        .replace(/^\/+/, '')
-        .replace(/^api\/+/, '');
+      const joined = Array.isArray(queryPath) ? queryPath.join('/') : String(queryPath);
+      const subPath = joined.replace(/^\/+/, '').replace(/^api\/+/, '');
       parsed.searchParams.delete('__path');
+      parsed.searchParams.delete('...path');
+      parsed.searchParams.delete('path');
       const remainingSearch = parsed.searchParams.toString();
       req.url = `/api/${subPath}${remainingSearch ? `?${remainingSearch}` : ''}`;
     } else if (isGenericEntryPath) {
-      const headerPath = String(
-        req?.headers?.['x-invoke-path'] || req?.headers?.['x-matched-path'] || ''
+      const candidateHeader = String(
+        req?.headers?.['x-invoke-path'] ||
+          req?.headers?.['x-matched-path'] ||
+          req?.headers?.['x-forwarded-uri'] ||
+          req?.headers?.['x-original-url'] ||
+          ''
       ).trim();
+
       if (
-        headerPath.startsWith('/api/') &&
-        headerPath !== '/api/index' &&
-        headerPath !== '/api/index.js' &&
-        !headerPath.includes('[...')
+        candidateHeader.startsWith('/api/') &&
+        candidateHeader !== '/api/index' &&
+        candidateHeader !== '/api/index.js' &&
+        !candidateHeader.includes('[...')
       ) {
-        parsed.searchParams.delete('__path');
-        const remainingSearch = parsed.searchParams.toString();
-        req.url = `${headerPath}${remainingSearch ? `?${remainingSearch}` : ''}`;
+        const headerParsed = new URL(candidateHeader, 'http://localhost');
+        req.url = `${headerParsed.pathname}${headerParsed.search}`;
       }
     }
   } catch {
